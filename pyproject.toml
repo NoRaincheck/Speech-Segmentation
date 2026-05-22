@@ -8,5 +8,6 @@ dependencies = [
     "numpy>=2.4.6",
     "onnx>=1.21.0",
     "onnxruntime>=1.26.0",
+    "scikit-learn>=1.8.0",
     "transformers>=5.9.0",
 ]
