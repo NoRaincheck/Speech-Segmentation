@@ -18,3 +18,20 @@ dependencies = [
 
 [tool.uv.sources]
 kittentts = { url = "https://github.com/KittenML/KittenTTS/releases/download/0.8.1/kittentts-0.8.1-py3-none-any.whl" }
+
+[tool.ruff]
+line-length = 120
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+
+[tool.ruff.lint]
+select = ["I"]
+
+[dependency-groups]
+dev = [
+    "deno>=2.9.0",
+    "ruff>=0.15.20",
+    "ty>=0.0.55",
+]

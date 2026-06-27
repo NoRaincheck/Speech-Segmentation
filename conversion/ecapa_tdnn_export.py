@@ -12,6 +12,7 @@ Outputs (in models/):
     ecapa_tdnn.onnx       — ONNX model (input: [B, T, 80], output: [B, 1, 192])
     ecapa_norm_mean.npy   — Global embedding normalization mean (192,)
 """
+
 from pathlib import Path
 
 import numpy as np
@@ -77,6 +78,7 @@ def main():
     print(f"  Saved {onnx_path}")
 
     import onnxruntime as ort
+
     session = ort.InferenceSession(str(onnx_path))
     onnx_out = session.run(None, {"input_values": dummy_input.numpy()})
     print(f"  ONNX output shape: {onnx_out[0].shape}")

@@ -4,6 +4,7 @@ Verify that the ONNX ECAPA-TDNN model produces identical output to PyTorch.
 Usage (from project root):
     python conversion/test_ecapa_onnx.py
 """
+
 import time
 from pathlib import Path
 
@@ -67,7 +68,7 @@ def main():
         torch_emb = mean_var_norm_emb(torch_emb, torch.ones(1))
     torch_time = time.perf_counter() - start
     torch_emb_np = torch_emb.numpy().flatten()
-    print(f"    Embedding shape: {torch_emb.shape}, time: {torch_time*1000:.1f}ms")
+    print(f"    Embedding shape: {torch_emb.shape}, time: {torch_time * 1000:.1f}ms")
 
     print("[5] Running ONNX inference...")
     start = time.perf_counter()
@@ -75,7 +76,7 @@ def main():
     onnx_emb = onnx_raw.flatten() - norm_mean
     onnx_emb = onnx_emb / np.linalg.norm(onnx_emb)
     onnx_time = time.perf_counter() - start
-    print(f"    Embedding shape: {onnx_raw.shape}, time: {onnx_time*1000:.1f}ms")
+    print(f"    Embedding shape: {onnx_raw.shape}, time: {onnx_time * 1000:.1f}ms")
 
     torch_emb_norm = torch_emb_np / np.linalg.norm(torch_emb_np)
 
@@ -89,8 +90,8 @@ def main():
     print(f"  Cosine similarity (after norm):  {cos_sim:.6f}")
     print(f"  Max absolute difference:         {max_diff:.8f}")
     print(f"  Mean absolute difference:        {mean_diff:.8f}")
-    print(f"  PyTorch time:                    {torch_time*1000:.1f}ms")
-    print(f"  ONNX time:                       {onnx_time*1000:.1f}ms")
+    print(f"  PyTorch time:                    {torch_time * 1000:.1f}ms")
+    print(f"  ONNX time:                       {onnx_time * 1000:.1f}ms")
 
     if cos_sim > 0.99:
         print("\n  PASS: ONNX output matches PyTorch (cosine sim > 0.99)")

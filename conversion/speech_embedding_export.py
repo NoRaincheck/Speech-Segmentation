@@ -10,10 +10,11 @@ Usage (from project root):
 Outputs (in models/):
     model_with_embedding.onnx
 """
+
+import urllib.request
 from pathlib import Path
 
 import onnx
-import urllib.request
 from onnx import shape_inference
 
 MODELS_DIR = Path(__file__).resolve().parent.parent / "models"

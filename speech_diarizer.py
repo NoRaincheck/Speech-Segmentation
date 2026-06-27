@@ -1,6 +1,7 @@
 import os
 import urllib.request
 import wave
+
 import numpy as np
 import onnxruntime as ort
 
@@ -32,9 +33,7 @@ if sr != target_sr:
     audio = np.interp(np.linspace(0, old_len - 1, new_len), np.arange(old_len), audio)
 
 session = ort.InferenceSession(model_path)
-logits = session.run(
-    None, {"input_values": audio[np.newaxis, np.newaxis, :].astype(np.float32)}
-)[0]
+logits = session.run(None, {"input_values": audio[np.newaxis, np.newaxis, :].astype(np.float32)})[0]
 
 frame_logits = logits[0]
 exps = np.exp(frame_logits - frame_logits.max(axis=1, keepdims=True))

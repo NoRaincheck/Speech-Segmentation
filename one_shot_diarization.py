@@ -23,6 +23,7 @@ Control: Luna's reference is extracted but never used in the conversation.
 Usage:
     uv run python one_shot_diarization.py
 """
+
 import os
 
 import numpy as np
@@ -104,7 +105,7 @@ def extract_fbank(audio_16k):
     frames *= hamming
 
     mag_frames = np.abs(np.fft.rfft(frames, n_fft))
-    pow_frames = (1.0 / n_fft) * (mag_frames ** 2)
+    pow_frames = (1.0 / n_fft) * (mag_frames**2)
 
     low_freq_mel = 0
     high_freq_mel = 2595 * np.log10(1 + (FBANK_SR / 2) / 700)
@@ -165,9 +166,7 @@ def segment_speech(probs):
 
 def run_segmentation(audio_16k, seg_session):
     """Run pyannote segmentation model to find speech segments."""
-    logits = seg_session.run(
-        None, {"input_values": audio_16k[np.newaxis, np.newaxis, :].astype(np.float32)}
-    )[0]
+    logits = seg_session.run(None, {"input_values": audio_16k[np.newaxis, np.newaxis, :].astype(np.float32)})[0]
     frame_logits = logits[0]
     exps = np.exp(frame_logits - frame_logits.max(axis=1, keepdims=True))
     probs = exps / exps.sum(axis=1, keepdims=True)
@@ -180,9 +179,7 @@ def extract_embedding(audio_16k, emb_session, norm_mean):
     Returns a 192-dim L2-normalized embedding vector.
     """
     fbank = extract_fbank(audio_16k)
-    raw_emb = emb_session.run(
-        None, {"input_values": fbank[np.newaxis].astype(np.float32)}
-    )[0]
+    raw_emb = emb_session.run(None, {"input_values": fbank[np.newaxis].astype(np.float32)})[0]
     emb = raw_emb.flatten() - norm_mean
     emb = emb / np.linalg.norm(emb)
     return emb
@@ -206,10 +203,7 @@ def generate_reference_samples(tts, ref_dir):
             audio = tts.generate(phrase, voice=voice)
             path = os.path.join(ref_dir, f"{voice.lower()}_ref_{j}.wav")
             sf.write(path, audio, TTS_SR)
-        ref_paths[voice] = [
-            os.path.join(ref_dir, f"{voice.lower()}_ref_{j}.wav")
-            for j in range(len(phrases))
-        ]
+        ref_paths[voice] = [os.path.join(ref_dir, f"{voice.lower()}_ref_{j}.wav") for j in range(len(phrases))]
         print(f"  Generated {len(phrases)} reference files for {voice}")
     return ref_paths
 
@@ -241,7 +235,7 @@ def generate_conversation(tts, output_path):
             parts.append(silence)
     conversation = np.concatenate(parts)
     sf.write(output_path, conversation, TTS_SR)
-    print(f"  Generated {output_path} ({len(conversation)/TTS_SR:.2f}s, {len(DIALOGUE)} turns)")
+    print(f"  Generated {output_path} ({len(conversation) / TTS_SR:.2f}s, {len(DIALOGUE)} turns)")
     return conversation
 
 
@@ -258,17 +252,19 @@ def match_segments_to_references(conv_audio_16k, segments, ref_embeddings, emb_s
         best_idx = sims.argmax()
         start_t = start * FRAME_STEP / TARGET_SR
         end_t = end * FRAME_STEP / TARGET_SR
-        matches.append({
-            "speaker": ref_names[best_idx],
-            "spk_id": spk_id,
-            "start_frame": start,
-            "end_frame": end,
-            "start_time": start_t,
-            "end_time": end_t,
-            "confidence": conf,
-            "similarity": float(sims[best_idx]),
-            "all_sims": {name: float(s) for name, s in zip(ref_names, sims)},
-        })
+        matches.append(
+            {
+                "speaker": ref_names[best_idx],
+                "spk_id": spk_id,
+                "start_frame": start,
+                "end_frame": end,
+                "start_time": start_t,
+                "end_time": end_t,
+                "confidence": conf,
+                "similarity": float(sims[best_idx]),
+                "all_sims": {name: float(s) for name, s in zip(ref_names, sims)},
+            }
+        )
     return matches
 
 
@@ -323,9 +319,7 @@ def main():
     print(f"  Detected {len(conv_segments)} speech segments")
 
     print("\n=== Step 5: 1-shot speaker matching (ECAPA-TDNN embeddings) ===")
-    matches = match_segments_to_references(
-        conv_audio_16k, conv_segments, ref_embeddings, emb_session, norm_mean
-    )
+    matches = match_segments_to_references(conv_audio_16k, conv_segments, ref_embeddings, emb_session, norm_mean)
     for i, m in enumerate(matches):
         sim_str = " ".join(f"{k}={v:.3f}" for k, v in m["all_sims"].items())
         print(

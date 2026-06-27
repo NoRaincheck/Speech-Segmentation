@@ -1,4 +1,4 @@
-'''
+"""
 Speech embedding and speaker segmentation using an ONNX model.
 
 This module processes audio to extract embeddings and segment by speaker.
@@ -39,8 +39,10 @@ Verification Method:
   - Compare within-speaker vs between-speaker similarity averages
   - Same-speaker embeddings show significantly higher similarity (0.87-0.94)
   - Different-speaker embeddings show near-zero similarity (-0.01 to 0.07)
-'''
+"""
+
 import wave
+
 import numpy as np
 import onnxruntime as ort
 
@@ -61,9 +63,7 @@ if sr != target_sr:
     audio = np.interp(np.linspace(0, old_len - 1, new_len), np.arange(old_len), audio)
 
 session = ort.InferenceSession(model_path)
-logits, embeddings = session.run(
-    None, {"input_values": audio[np.newaxis, np.newaxis, :].astype(np.float32)}
-)
+logits, embeddings = session.run(None, {"input_values": audio[np.newaxis, np.newaxis, :].astype(np.float32)})
 
 frame_logits = logits[0]
 frame_embs = embeddings[0]
@@ -125,6 +125,4 @@ for spk_id, start_frame, end_frame, conf in segments:
     mean_emb = seg_embeddings.mean(axis=0)
     start_time = start_frame * step / target_sr
     end_time = end_frame * step / target_sr
-    print(
-        f"  SPEAKER_{spk_id:02d}  {start_time:7.2f}s - {end_time:7.2f}s  (conf={conf:.3f})  emb_dim={mean_emb.shape}"
-    )
+    print(f"  SPEAKER_{spk_id:02d}  {start_time:7.2f}s - {end_time:7.2f}s  (conf={conf:.3f})  emb_dim={mean_emb.shape}")

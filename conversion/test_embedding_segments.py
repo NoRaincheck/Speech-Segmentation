@@ -1,5 +1,5 @@
-from pathlib import Path
 import wave
+from pathlib import Path
 
 import numpy as np
 import onnxruntime as ort
@@ -23,9 +23,7 @@ if sr != target_sr:
     audio = np.interp(np.linspace(0, old_len - 1, new_len), np.arange(old_len), audio)
 
 session = ort.InferenceSession(model_path)
-logits, embeddings = session.run(
-    None, {"input_values": audio[np.newaxis, np.newaxis, :].astype(np.float32)}
-)
+logits, embeddings = session.run(None, {"input_values": audio[np.newaxis, np.newaxis, :].astype(np.float32)})
 
 frame_logits = logits[0]
 frame_embs = embeddings[0]
@@ -96,12 +94,10 @@ for spk_id, start_frame, end_frame, conf in segments:
     mean_emb = seg_embeddings.mean(axis=0)
     start_time = start_frame * step / target_sr
     end_time = end_frame * step / target_sr
-    print(
-        f"  SPEAKER_{spk_id:02d}  {start_time:7.2f}s - {end_time:7.2f}s  (conf={conf:.3f})  emb_dim={mean_emb.shape}"
-    )
+    print(f"  SPEAKER_{spk_id:02d}  {start_time:7.2f}s - {end_time:7.2f}s  (conf={conf:.3f})  emb_dim={mean_emb.shape}")
     segment_embeddings.append(mean_emb)
     speaker_labels.append(spk_id)
-    
+
     # Also collect frame-level embeddings
     for i in range(start_frame, end_frame):
         frame_embeddings_with_speakers.append((frame_embs[i], spk_id))
@@ -112,26 +108,26 @@ print()
 if len(segment_embeddings) > 0:
     seg_emb_array = np.array(segment_embeddings)
     seg_similarity = cosine_similarity(seg_emb_array)
-    
+
     print("=" * 60)
     print("SEGMENT-LEVEL SIMILARITY MATRIX (Cosine Similarity)")
     print("=" * 60)
     print("\nColumns/Rows correspond to segments in order:")
     for i, (spk_id, _, _, _) in enumerate(segments):
         print(f"  Segment {i}: SPEAKER_{spk_id:02d}")
-    
+
     print("\nSimilarity Matrix:")
     print(seg_similarity)
-    
+
     # Analyze segment-level similarity
     print("\n" + "=" * 60)
     print("SEGMENT-LEVEL ANALYSIS")
     print("=" * 60)
-    
+
     n_segments = len(segments)
     same_speaker_sim = []
     different_speaker_sim = []
-    
+
     for i in range(n_segments):
         for j in range(n_segments):
             if i == j:
@@ -143,11 +139,11 @@ if len(segment_embeddings) > 0:
             else:
                 # Different speaker
                 different_speaker_sim.append(seg_similarity[i, j])
-    
+
     print(f"Average same-speaker similarity: {np.mean(same_speaker_sim):.4f}")
     print(f"Average different-speaker similarity: {np.mean(different_speaker_sim):.4f}")
     print(f"Mean difference (same - different): {np.mean(same_speaker_sim) - np.mean(different_speaker_sim):.4f}")
-    
+
     if np.mean(same_speaker_sim) > np.mean(different_speaker_sim):
         print("\n✓ VERIFIED: Same-speaker embeddings are more similar than different-speaker embeddings")
     else:
@@ -183,7 +179,9 @@ for i in range(len(frame_labels)):
 
 print(f"Average same-speaker frame similarity: {np.mean(same_speaker_frame_sim):.4f}")
 print(f"Average different-speaker frame similarity: {np.mean(different_speaker_frame_sim):.4f}")
-print(f"Mean difference (same - different): {np.mean(same_speaker_frame_sim) - np.mean(different_speaker_frame_sim):.4f}")
+print(
+    f"Mean difference (same - different): {np.mean(same_speaker_frame_sim) - np.mean(different_speaker_frame_sim):.4f}"
+)
 
 if np.mean(same_speaker_frame_sim) > np.mean(different_speaker_frame_sim):
     print("\n✓ VERIFIED: Same-speaker frame embeddings are more similar than different-speaker embeddings")
@@ -215,21 +213,21 @@ for spk in unique_speakers:
     indices = np.where(frame_labels == spk)[0]
     if len(indices) < 2:
         continue
-    
+
     # Within-speaker similarity (excluding diagonal)
     within_sim = []
     for i in range(len(indices)):
         for j in range(len(indices)):
             if i != j:
                 within_sim.append(frame_similarity[indices[i], indices[j]])
-    
+
     # Between-speaker similarity
     between_sim = []
     for i in indices:
         for j in range(len(frame_labels)):
             if frame_labels[j] != spk:
                 between_sim.append(frame_similarity[i, j])
-    
+
     print(f"\nSPEAKER_{spk:02d}:")
     print(f"  Frames: {len(indices)}")
     print(f"  Within-speaker similarity (avg): {np.mean(within_sim):.4f}")
