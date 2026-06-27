@@ -1612,44 +1612,54 @@ wheels = [
 [[package]]
 name = "speech-segmentation"
 version = "0.1.0"
-source = { virtual = "." }
+source = { editable = "." }
 dependencies = [
-    { name = "kittentts" },
     { name = "numpy" },
-    { name = "onnx" },
     { name = "onnxruntime" },
-    { name = "onnxscript" },
-    { name = "scikit-learn" },
     { name = "soundfile" },
-    { name = "speechbrain" },
-    { name = "transformers" },
 ]
 
 [package.dev-dependencies]
+demo = [
+    { name = "kittentts" },
+    { name = "scikit-learn" },
+    { name = "transformers" },
+]
 dev = [
     { name = "deno" },
     { name = "ruff" },
     { name = "ty" },
 ]
+export = [
+    { name = "onnx" },
+    { name = "onnxscript" },
+    { name = "speechbrain" },
+    { name = "torch" },
+]
 
 [package.metadata]
 requires-dist = [
-    { name = "kittentts", url = "https://github.com/KittenML/KittenTTS/releases/download/0.8.1/kittentts-0.8.1-py3-none-any.whl" },
     { name = "numpy", specifier = ">=2.4.6" },
-    { name = "onnx", specifier = ">=1.21.0" },
     { name = "onnxruntime", specifier = ">=1.26.0" },
-    { name = "onnxscript", specifier = ">=0.7.0" },
-    { name = "scikit-learn", specifier = ">=1.8.0" },
     { name = "soundfile", specifier = ">=0.14.0" },
-    { name = "speechbrain", specifier = ">=1.1.0" },
-    { name = "transformers", specifier = ">=5.9.0" },
 ]
 
 [package.metadata.requires-dev]
+demo = [
+    { name = "kittentts", url = "https://github.com/KittenML/KittenTTS/releases/download/0.8.1/kittentts-0.8.1-py3-none-any.whl" },
+    { name = "scikit-learn", specifier = ">=1.8.0" },
+    { name = "transformers", specifier = ">=5.9.0" },
+]
 dev = [
     { name = "deno", specifier = ">=2.9.0" },
     { name = "ruff", specifier = ">=0.15.20" },
     { name = "ty", specifier = ">=0.0.55" },
+]
+export = [
+    { name = "onnx", specifier = ">=1.21.0" },
+    { name = "onnxscript", specifier = ">=0.7.0" },
+    { name = "speechbrain", specifier = ">=1.1.0" },
+    { name = "torch" },
 ]
 
 [[package]]
