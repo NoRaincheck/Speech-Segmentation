@@ -1,3 +1,4 @@
+import os
 import urllib.request
 import wave
 import numpy as np
@@ -5,11 +6,13 @@ import onnxruntime as ort
 
 model_id = "onnx-community/pyannote-segmentation-3.0"
 
-model_path = "model.onnx"
-urllib.request.urlretrieve(
-    f"https://huggingface.co/{model_id}/resolve/main/onnx/model.onnx",
-    model_path,
-)
+os.makedirs("models", exist_ok=True)
+model_path = "models/model.onnx"
+if not os.path.exists(model_path):
+    urllib.request.urlretrieve(
+        f"https://huggingface.co/{model_id}/resolve/main/onnx/model.onnx",
+        model_path,
+    )
 
 url = "https://huggingface.co/datasets/Xenova/transformers.js-docs/resolve/main/mlk.wav"
 audio_path = "mlk.wav"

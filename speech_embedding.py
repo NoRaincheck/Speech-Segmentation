@@ -44,7 +44,7 @@ import wave
 import numpy as np
 import onnxruntime as ort
 
-model_path = "model_with_embedding.onnx"
+model_path = "models/model_with_embedding.onnx"
 audio_path = "mlk.wav"
 
 with wave.open(audio_path, "rb") as wf:

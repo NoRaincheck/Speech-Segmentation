@@ -5,9 +5,16 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.14"
 dependencies = [
+    "kittentts",
     "numpy>=2.4.6",
     "onnx>=1.21.0",
     "onnxruntime>=1.26.0",
+    "onnxscript>=0.7.0",
     "scikit-learn>=1.8.0",
+    "soundfile>=0.14.0",
+    "speechbrain>=1.1.0",
     "transformers>=5.9.0",
 ]
+
+[tool.uv.sources]
+kittentts = { url = "https://github.com/KittenML/KittenTTS/releases/download/0.8.1/kittentts-0.8.1-py3-none-any.whl" }

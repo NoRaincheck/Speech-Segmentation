@@ -1,10 +1,13 @@
+from pathlib import Path
 import wave
+
 import numpy as np
 import onnxruntime as ort
 from sklearn.metrics.pairwise import cosine_similarity
 
-model_path = "model_with_embedding.onnx"
-audio_path = "mlk.wav"
+PROJ_DIR = Path(__file__).resolve().parent.parent
+model_path = str(PROJ_DIR / "models" / "model_with_embedding.onnx")
+audio_path = str(PROJ_DIR / "mlk.wav")
 
 with wave.open(audio_path, "rb") as wf:
     sr = wf.getframerate()
