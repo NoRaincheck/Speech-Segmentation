@@ -115,6 +115,45 @@ def generate_conversation(tts, output_path):
     return conversation, turn_boundaries
 
 
+def evaluate_turn_classification(turn_boundaries, conv_audio_24k, embedder, ref_embeddings):
+    """Classify each dialogue turn against reference speakers (no segmentation).
+
+    This decouples classification accuracy from pyannote's segmentation
+    boundaries, testing the embedder + classifier in isolation.
+    """
+    print("\n=== Decoupled Turn Classification (no segmentation) ===")
+    ref_names = list(ref_embeddings.keys())
+    ref_matrix = np.array([ref_embeddings[n] for n in ref_names])
+
+    correct = 0
+    for t_start, t_end, gt_voice in turn_boundaries:
+        s_24k = int(t_start * TTS_SR)
+        e_24k = int(t_end * TTS_SR)
+        chunk_24k = conv_audio_24k[s_24k:e_24k]
+        if len(chunk_24k) == 0:
+            continue
+        num_samples = int(len(chunk_24k) * 16000 / TTS_SR)
+        chunk_16k = np.interp(
+            np.linspace(0, len(chunk_24k) - 1, num_samples),
+            np.arange(len(chunk_24k)),
+            chunk_24k,
+        ).astype(np.float32)
+        emb = embedder.embed(chunk_16k)
+        emb = emb / np.linalg.norm(emb)
+        sims = ref_matrix @ emb
+        best_idx = int(sims.argmax())
+        pred = ref_names[best_idx]
+        is_correct = pred == gt_voice
+        if is_correct:
+            correct += 1
+        mark = "" if is_correct else " [WRONG]"
+        sim_str = " ".join(f"{n}={s:.3f}" for n, s in zip(ref_names, sims))
+        print(f"  {gt_voice:5s} -> {pred:5s} (sim={sims[best_idx]:.3f}) [{sim_str}]{mark}")
+
+    print(f"  Turn accuracy: {correct}/{len(turn_boundaries)} ({correct / len(turn_boundaries) * 100:.1f}%)")
+    return correct, len(turn_boundaries)
+
+
 def extract_per_speaker_audio(matches, conv_audio_24k):
     speaker_segments = {}
     for m in matches:
@@ -186,6 +225,8 @@ def main():
     results = extract_per_speaker_audio(matches, conv_audio_24k)
     for name, info in sorted(results.items()):
         print(f"  {name}: {info['segments']} segments, {info['duration']:.1f}s total -> {info['path']}")
+
+    evaluate_turn_classification(turn_boundaries, conv_audio_24k, embedder, ref_embeddings)
 
     print("\n=== Summary ===")
 
