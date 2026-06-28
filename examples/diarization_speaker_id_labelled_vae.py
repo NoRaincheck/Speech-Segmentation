@@ -2,11 +2,13 @@
 
 Combines a full dialogue into a single audio file, runs diarization to detect
 speaker turns, then identifies each segment against reference speakers using a
-VAE trained on the labelled reference embeddings (not unlabelled data).
+VAE trained on labelled speech from the same speakers.
 
-The labelled VAE learns to project speaker embeddings into a latent space that
-maximally separates the known speakers, unlike the unsupervised VAE which
-learns from unlabelled speech data.
+The VAE is trained on a separate set of labelled phrases (not the reference
+phrases used for matching) to prevent overfitting to the reference prototypes.
+It uses the standard VAE loss (reconstruction + KL divergence) — no supervised
+loss terms. See the unsupervised VAE example's docstring for discussion of why
+supervised losses were rejected at this data scale.
 
 Requires the VAE dependency group:
     uv run --group vae python examples/diarization_speaker_id_labelled_vae.py [--stitch [THRESHOLD]]
@@ -27,7 +29,7 @@ from speech_segmentation.vae import VAE, SpeakerVAE
 EMB_MODEL_PATH = "models/ecapa_tdnn.onnx"
 NORM_MEAN_PATH = "models/ecapa_norm_mean.npy"
 SEG_MODEL_PATH = "models/model.onnx"
-VAE_MODEL_PATH = "models/speaker_vae.pt"
+VAE_MODEL_PATH = "models/diarization_labelled_vae.pt"
 TTS_SR = 24000
 SILENCE_GAP_SEC = 0.5
 
@@ -41,21 +43,22 @@ VAE_KL_WARMUP_EPOCHS = 100
 
 STITCH_THRESHOLD = 0.25
 
-REFERENCE_PHRASES = {
+VAE_LABELLED_PHRASES = {
     "Bella": [
-        "The quick brown fox jumps over the lazy dog.",
-        "A journey of a thousand miles begins with a single step.",
-        "The early bird catches the worm but the second mouse gets the cheese.",
+        "The sun rises in the east and sets in the west.",
+        "The best time to plant a tree was twenty years ago.",
+        "Life is what happens when you are busy making other plans.",
+        "Innovation distinguishes between a leader and a follower.",
     ],
     "Bruno": [
-        "Pack my box with five dozen liquor jugs.",
-        "How vexingly quick daft zebras jump.",
-        "The five boxing wizards jump quickly across the mat.",
+        "Practice makes perfect when you dedicate yourself.",
+        "Success is not final and failure is not fatal.",
+        "The only way to do great work is to love what you do.",
     ],
     "Luna": [
-        "She sells seashells by the seashore every Sunday morning.",
-        "Peter Piper picked a peck of pickled peppers.",
-        "Unique New York, unique New York, you know you need unique New York.",
+        "Knowledge is power but enthusiasm pulls the switch.",
+        "In the middle of difficulty lies opportunity.",
+        "Stay hungry stay foolish and never stop learning.",
     ],
 }
 
@@ -111,23 +114,9 @@ def train_vae(embeddings: np.ndarray, save_path: str) -> None:
     print(f"  Saved VAE weights to {save_path}")
 
 
-def generate_reference_samples(tts, ref_dir):
-    os.makedirs(ref_dir, exist_ok=True)
-    ref_paths = {}
-    for voice, phrases in REFERENCE_PHRASES.items():
-        paths = [os.path.join(ref_dir, f"{voice.lower()}_ref_{j}.wav") for j in range(len(phrases))]
-        ref_paths[voice] = paths
-        if all(os.path.exists(p) for p in paths):
-            print(f"  Reusing {len(phrases)} existing reference files for {voice}")
-            continue
-        for j, phrase in enumerate(phrases):
-            audio = tts.generate(phrase, voice=voice)
-            sf.write(paths[j], audio, TTS_SR)
-        print(f"  Generated {len(phrases)} reference files for {voice}")
-    return ref_paths
-
-
-def build_reference_embeddings(ref_paths, embedder):
+def build_reference_embeddings(ref_dir, embedder):
+    voices = ["Bella", "Bruno", "Luna"]
+    ref_paths = {v: [os.path.join(ref_dir, f"{v.lower()}_ref_{j}.wav") for j in range(3)] for v in voices}
     ref_embeddings = {}
     for voice, paths in ref_paths.items():
         voice_embs = []
@@ -145,9 +134,25 @@ def build_reference_embeddings(ref_paths, embedder):
     return ref_embeddings
 
 
-def collect_all_embeddings(ref_paths, embedder):
+def generate_vae_labelled_samples(tts, vae_dir):
+    os.makedirs(vae_dir, exist_ok=True)
+    vae_paths = {}
+    for voice, phrases in VAE_LABELLED_PHRASES.items():
+        paths = [os.path.join(vae_dir, f"{voice.lower()}_vae_{j}.wav") for j in range(len(phrases))]
+        vae_paths[voice] = paths
+        if all(os.path.exists(p) for p in paths):
+            print(f"  Reusing {len(phrases)} existing VAE training files for {voice}")
+            continue
+        for j, phrase in enumerate(phrases):
+            audio = tts.generate(phrase, voice=voice)
+            sf.write(paths[j], audio, TTS_SR)
+        print(f"  Generated {len(phrases)} VAE training files for {voice}")
+    return vae_paths
+
+
+def collect_vae_labelled_embeddings(vae_paths, embedder):
     embeddings = []
-    for speaker, paths in ref_paths.items():
+    for speaker, paths in vae_paths.items():
         for path in paths:
             audio, _ = sf.read(path, dtype="float32")
             if audio.ndim > 1:
@@ -155,7 +160,7 @@ def collect_all_embeddings(ref_paths, embedder):
             emb = embedder.embed(audio)
             embeddings.append(emb)
     arr = np.array(embeddings, dtype=np.float32)
-    print(f"  Collected {len(arr)} embeddings for VAE training ({len(ref_paths)} speakers)")
+    print(f"  Collected {len(arr)} labelled embeddings for VAE training ({len(vae_paths)} speakers)")
     return arr
 
 
@@ -227,13 +232,12 @@ def evaluate_diarization(matches, ground_truth):
 
     For each segment, compute overlap % with each speaker's ground truth ranges.
     The speaker with highest overlap is the expected label.
+    Shows similarity scores for each segment to explain predictions.
     """
     all_speakers = sorted(set(s for s, _, _ in ground_truth))
 
-    print(
-        f"\n  {'Seg#':>4s}  {'Time Range':>18s}  {'Predicted':>10s}  {'Expected':>10s}  {'Overlap':>7s}  {'OK?':>4s}  Overlap Breakdown"
-    )
-    print(f"  {'-' * 4}  {'-' * 18}  {'-' * 10}  {'-' * 10}  {'-' * 7}  {'-' * 4}  {'-' * 30}")
+    print(f"\n  {'Seg#':>4s}  {'Time Range':>18s}  {'Expected':>10s}  {'Predicted':>10s}  {'Sim':>5s}  {'OK?':>4s}  Similarities")
+    print(f"  {'-' * 4}  {'-' * 18}  {'-' * 10}  {'-' * 10}  {'-' * 5}  {'-' * 4}  {'-' * 40}")
 
     correct = 0
     for i, m in enumerate(matches):
@@ -251,16 +255,15 @@ def evaluate_diarization(matches, ground_truth):
             overlaps[speaker] = total
 
         expected = max(overlaps, key=overlaps.get)
-        overlap_pct = overlaps[expected] / seg_duration
         is_correct = m.speaker == expected
         if is_correct:
             correct += 1
 
         mark = "" if is_correct else " [WRONG]"
-        overlap_str = " ".join(f"{s}={overlaps[s] / seg_duration * 100:.0f}%" for s in all_speakers)
+        sim_str = " ".join(f"{n}={s:.3f}" for n, s in m.all_sims.items())
         time_range = f"{m.start_time:6.2f}s-{m.end_time:6.2f}s"
         print(
-            f"  {i + 1:4d}  {time_range:>18s}  {m.speaker:>10s}  {expected:>10s}  {overlap_pct:6.1%}  {'OK' if is_correct else '  ':>4s}  [{overlap_str}]{mark}"
+            f"  {i + 1:4d}  {time_range:>18s}  {expected:>10s}  {m.speaker:>10s}  {m.similarity:5.3f}  {'OK' if is_correct else '  ':>4s}  [{sim_str}]{mark}"
         )
 
     total = len(matches)
@@ -292,28 +295,30 @@ def main():
     embedder = SpeakerEmbedder(EMB_MODEL_PATH, NORM_MEAN_PATH)
     segmenter = SpeechSegmenter(SEG_MODEL_PATH)
 
-    print("\n=== Step 1: Generating few-shot reference samples ===")
-    ref_paths = generate_reference_samples(tts, "refs_labelled")
+    print("\n=== Step 1: Building few-shot reference embeddings (ECAPA-TDNN) ===")
+    ref_embeddings = build_reference_embeddings("refs", embedder)
 
-    print("\n=== Step 2: Building few-shot reference embeddings (ECAPA-TDNN) ===")
-    ref_embeddings = build_reference_embeddings(ref_paths, embedder)
+    print("\n=== Step 2: Generating labelled VAE training samples ===")
+    vae_paths = generate_vae_labelled_samples(tts, "vae_labelled")
 
-    print("\n=== Step 3: Training VAE on labelled reference embeddings ===")
-    all_embs = collect_all_embeddings(ref_paths, embedder)
-    train_vae(all_embs, VAE_MODEL_PATH)
+    print("\n=== Step 3: Collecting labelled embeddings for VAE training ===")
+    vae_embs = collect_vae_labelled_embeddings(vae_paths, embedder)
 
-    print("\n=== Step 4: Loading trained VAE ===")
+    print("\n=== Step 4: Training VAE on labelled embeddings ===")
+    train_vae(vae_embs, VAE_MODEL_PATH)
+
+    print("\n=== Step 5: Loading trained VAE ===")
     vae = SpeakerVAE(VAE_MODEL_PATH)
     print(f"  VAE: {vae.INPUT_DIM} -> {vae.LATENT_DIM} (latent)")
 
-    print("\n=== Step 5: Generating dialogue turns ===")
+    print("\n=== Step 6: Generating dialogue turns ===")
     turn_paths = generate_dialogue_turns(tts, "turns")
 
-    print("\n=== Step 6: Combining turns into single audio file ===")
+    print("\n=== Step 7: Combining turns into single audio file ===")
     combined_path = "combined_dialogue.wav"
     combined_audio, ground_truth = combine_turns(turn_paths, combined_path)
 
-    print("\n=== Step 7: Running diarization on combined audio ===")
+    print("\n=== Step 8: Running diarization on combined audio ===")
     diarizer = Diarizer(segmenter, embedder, vae=vae)
     diarizer.build_references(ref_embeddings)
     stitch_kw = {}
@@ -324,7 +329,7 @@ def main():
     matches, raw_segments = diarizer.diarize(combined_audio, **stitch_kw)
     print(f"  Found {len(matches)} segments from {len(raw_segments)} raw segments")
 
-    print("\n=== Step 8: Evaluating against probabilistic ground truth ===")
+    print("\n=== Step 9: Evaluating against probabilistic ground truth ===")
     evaluate_diarization(matches, ground_truth)
 
 

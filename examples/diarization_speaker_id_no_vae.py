@@ -129,13 +129,12 @@ def evaluate_diarization(matches, ground_truth):
 
     For each segment, compute overlap % with each speaker's ground truth ranges.
     The speaker with highest overlap is the expected label.
+    Shows similarity scores for each segment to explain predictions.
     """
     all_speakers = sorted(set(s for s, _, _ in ground_truth))
 
-    print(
-        f"\n  {'Seg#':>4s}  {'Time Range':>18s}  {'Predicted':>10s}  {'Expected':>10s}  {'Overlap':>7s}  {'OK?':>4s}  Overlap Breakdown"
-    )
-    print(f"  {'-' * 4}  {'-' * 18}  {'-' * 10}  {'-' * 10}  {'-' * 7}  {'-' * 4}  {'-' * 30}")
+    print(f"\n  {'Seg#':>4s}  {'Time Range':>18s}  {'Expected':>10s}  {'Predicted':>10s}  {'Sim':>5s}  {'OK?':>4s}  Similarities")
+    print(f"  {'-' * 4}  {'-' * 18}  {'-' * 10}  {'-' * 10}  {'-' * 5}  {'-' * 4}  {'-' * 40}")
 
     correct = 0
     for i, m in enumerate(matches):
@@ -153,16 +152,15 @@ def evaluate_diarization(matches, ground_truth):
             overlaps[speaker] = total
 
         expected = max(overlaps, key=overlaps.get)
-        overlap_pct = overlaps[expected] / seg_duration
         is_correct = m.speaker == expected
         if is_correct:
             correct += 1
 
         mark = "" if is_correct else " [WRONG]"
-        overlap_str = " ".join(f"{s}={overlaps[s] / seg_duration * 100:.0f}%" for s in all_speakers)
+        sim_str = " ".join(f"{n}={s:.3f}" for n, s in m.all_sims.items())
         time_range = f"{m.start_time:6.2f}s-{m.end_time:6.2f}s"
         print(
-            f"  {i + 1:4d}  {time_range:>18s}  {m.speaker:>10s}  {expected:>10s}  {overlap_pct:6.1%}  {'OK' if is_correct else '  ':>4s}  [{overlap_str}]{mark}"
+            f"  {i + 1:4d}  {time_range:>18s}  {expected:>10s}  {m.speaker:>10s}  {m.similarity:5.3f}  {'OK' if is_correct else '  ':>4s}  [{sim_str}]{mark}"
         )
 
     total = len(matches)

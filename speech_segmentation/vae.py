@@ -38,8 +38,11 @@ class SpeakerVAE:
         config = checkpoint["_vae_config"]
         self.INPUT_DIM = config["input_dim"]
         self.LATENT_DIM = config["latent_dim"]
+        num_speakers = config.get("num_speakers")
 
-        self._model = VAE(self.INPUT_DIM, self.LATENT_DIM).to(self._device)
+        self._model = VAE(self.INPUT_DIM, self.LATENT_DIM, num_speakers=num_speakers).to(
+            self._device
+        )
         self._model.load_state_dict(checkpoint["state_dict"])
         self._model.eval()
 
@@ -80,9 +83,17 @@ class SpeakerVAE:
 
 
 class VAE(torch.nn.Module):  # type: ignore[name-defined]
-    """MLP-based VAE used for training and inference."""
+    """MLP-based VAE used for training and inference.
 
-    def __init__(self, input_dim: int, latent_dim: int) -> None:
+    Args:
+        input_dim: Dimensionality of input embeddings.
+        latent_dim: Dimensionality of the latent space.
+        num_speakers: When provided, adds a linear classification head on
+            the latent space for speaker discrimination. The ``classify``
+            method returns logits over speaker classes.
+    """
+
+    def __init__(self, input_dim: int, latent_dim: int, num_speakers: int | None = None) -> None:
         super().__init__()
         torch = self._get_torch()
 
@@ -113,6 +124,10 @@ class VAE(torch.nn.Module):  # type: ignore[name-defined]
             torch.nn.Linear(256, input_dim),
         )
 
+        self._classifier = (
+            torch.nn.Linear(latent_dim, num_speakers) if num_speakers is not None else None
+        )
+
     @staticmethod
     def _get_torch():
         import torch
@@ -132,6 +147,20 @@ class VAE(torch.nn.Module):  # type: ignore[name-defined]
 
     def decode(self, z):
         return self._decoder(z)
+
+    def classify(self, z):
+        """Classify speaker from a latent vector.
+
+        Args:
+            z: Latent tensor of shape ``(batch, latent_dim)``.
+
+        Returns:
+            Logits tensor of shape ``(batch, num_speakers)``.
+            Returns None if no classification head was configured.
+        """
+        if self._classifier is None:
+            return None
+        return self._classifier(z)
 
     def forward(self, x):
         torch = self._get_torch()
