@@ -56,22 +56,36 @@ class Diarizer:
             ref_embeddings: Mapping of speaker name to L2-normalized embedding.
         """
         self._ref_names = list(ref_embeddings.keys())
-        ref_matrix = np.array([ref_embeddings[n] for n in self._ref_names])
+        self._raw_ref_matrix = np.array([ref_embeddings[n] for n in self._ref_names])
         if self._vae is not None:
-            ref_matrix = self._vae.encode_batch(ref_matrix)
-        self._ref_matrix = ref_matrix
+            self._ref_matrix = self._vae.encode_batch(self._raw_ref_matrix)
+        else:
+            self._ref_matrix = self._raw_ref_matrix
 
-    def diarize(self, audio_16k: np.ndarray) -> tuple[list[DiarizationMatch], list]:
+    def diarize(
+        self,
+        audio_16k: np.ndarray,
+        stitch_threshold: float | None = None,
+        stitch_raw: bool = False,
+    ) -> tuple[list[DiarizationMatch], list]:
         """Segment audio and match each segment to known speakers.
 
         Args:
             audio_16k: Audio samples at 16kHz, float32.
+            stitch_threshold: When set, consecutive segments with the same
+                speaker label whose raw ECAPA-TDNN embeddings have cosine
+                similarity above this threshold are merged.
+            stitch_raw: When True, stitching uses raw ECAPA-TDNN embeddings
+                (before VAE projection) for speaker label determination.
+                When False, uses VAE-projected embeddings like the main matching.
 
         Returns:
             Tuple of (list of DiarizationMatch, list of raw Segments).
         """
         segments = self.segmenter.segment(audio_16k)
         matches = self._match_segments(audio_16k, segments)
+        if stitch_threshold is not None:
+            matches = self._stitch_segments(audio_16k, matches, stitch_threshold, stitch_raw)
         return matches, segments
 
     def _match_segments(self, audio_16k: np.ndarray, segments: list) -> list[DiarizationMatch]:
@@ -102,11 +116,89 @@ class Diarizer:
         end_sample = end_frame * FRAME_STEP
         segment_audio = audio_16k[start_sample:end_sample]
         if len(segment_audio) < MIN_SEGMENT_SAMPLES:
-            return None
+            segment_audio = self._pad_and_repeat(segment_audio)
         emb = self.embedder.embed(segment_audio)
         if self._vae is not None:
             emb = self._vae.encode(emb)
         return emb
+
+    def _stitch_segments(
+        self,
+        audio_16k: np.ndarray,
+        matches: list[DiarizationMatch],
+        threshold: float,
+        use_raw: bool = False,
+    ) -> list[DiarizationMatch]:
+        """Merge consecutive same-speaker segments when embeddings are similar.
+
+        Uses raw ECAPA-TDNN embeddings (before any VAE projection) to compute
+        cosine similarity between adjacent segments. When similarity exceeds
+        the threshold and the predicted speaker matches, segments are merged.
+
+        Args:
+            use_raw: When True, uses raw embeddings for speaker label
+                determination. When False, uses the speaker labels from
+                the original matching step.
+        """
+        if len(matches) <= 1:
+            return matches
+
+        merged: list[DiarizationMatch] = [matches[0]]
+        for m in matches[1:]:
+            prev = merged[-1]
+
+            emb_prev = self._compute_raw_embedding(audio_16k, prev.start_frame, prev.end_frame)
+            emb_curr = self._compute_raw_embedding(audio_16k, m.start_frame, m.end_frame)
+            if emb_prev is None or emb_curr is None:
+                merged.append(m)
+                continue
+
+            if use_raw:
+                raw_sims_prev = self._raw_ref_matrix @ emb_prev
+                prev_speaker = self._ref_names[raw_sims_prev.argmax()]
+                raw_sims_curr = self._raw_ref_matrix @ emb_curr
+                curr_speaker = self._ref_names[raw_sims_curr.argmax()]
+            else:
+                prev_speaker = prev.speaker
+                curr_speaker = m.speaker
+
+            if prev_speaker != curr_speaker:
+                merged.append(m)
+                continue
+
+            sim = float(np.dot(emb_prev, emb_curr))
+            if sim > threshold:
+                merged[-1] = DiarizationMatch(
+                    speaker=prev_speaker,
+                    spk_id=prev.spk_id,
+                    start_frame=prev.start_frame,
+                    end_frame=m.end_frame,
+                    start_time=prev.start_time,
+                    end_time=m.end_time,
+                    confidence=max(prev.confidence, m.confidence),
+                    similarity=sim,
+                    all_sims={**prev.all_sims, **m.all_sims},
+                )
+            else:
+                merged.append(m)
+
+        return merged
+
+    def _compute_raw_embedding(self, audio_16k: np.ndarray, start_frame: int, end_frame: int) -> np.ndarray | None:
+        """Compute embedding without VAE projection for stitching."""
+        start_sample = start_frame * FRAME_STEP
+        end_sample = end_frame * FRAME_STEP
+        segment_audio = audio_16k[start_sample:end_sample]
+        if len(segment_audio) < MIN_SEGMENT_SAMPLES:
+            segment_audio = self._pad_and_repeat(segment_audio)
+        return self.embedder.embed(segment_audio)
+
+    def _pad_and_repeat(self, audio: np.ndarray) -> np.ndarray:
+        """Pad short audio with silence and repeat until MIN_SEGMENT_SAMPLES."""
+        padding = np.zeros(MIN_SEGMENT_SAMPLES - len(audio), dtype=audio.dtype)
+        padded = np.concatenate([audio, padding])
+        repeats = MIN_SEGMENT_SAMPLES // len(padded) + 1
+        return np.tile(padded, repeats)[:MIN_SEGMENT_SAMPLES]
 
     def _cosine_similarity_matrix(self, emb: np.ndarray) -> np.ndarray:
         return self._ref_matrix @ emb
