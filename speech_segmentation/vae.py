@@ -1,24 +1,9 @@
-"""Optional VAE-based embedding enhancement for few-shot speaker matching.
+"""VAE-based embedding enhancement for few-shot speaker matching.
 
 Transforms ECAPA-TDNN embeddings into a structured latent space via a
-variational bottleneck. Training uses three combined losses plus hard
-negative mining to produce a discriminative latent space:
-
-- **Reconstruction loss** (MSE): preserves input information.
-- **Center loss** (Wen et al., ECCV 2016): pulls same-speaker embeddings
-  toward their per-class center in latent space.
-- **Margin loss**: pushes different-speaker centers apart via cosine
-  similarity with a margin threshold.
-- **Hard negative mining**: for each sample, finds the closest
-  different-speaker center and applies extra margin pressure. This
-  directly targets the hardest discrimination cases (similar speakers).
-- **Prototype augmentation**: samples synthetic embeddings from a
-  Gaussian centered on each class prototype during training. Expands
-  the decision boundary without requiring additional audio data.
-- **Learned diagonal metric**: a per-dimension weight vector trained
-  alongside the VAE that amplifies discriminative latent dimensions
-  and suppresses noisy ones. Applied before L2-normalization at
-  inference time.
+variational bottleneck. The encoder maps embeddings to a learned latent
+space (mean + logvar), and the reparameterization trick produces the
+latent vector. At inference, only the encoder is needed.
 
 The latent vectors are L2-normalized at output so that cosine similarity
 (dot product) can be used directly for matching.
@@ -34,14 +19,6 @@ import torch
 
 class SpeakerVAE:
     """Transforms ECAPA-TDNN embeddings via a variational bottleneck.
-
-    The encoder maps embeddings to a learned latent space (mean + logvar),
-    and the reparameterization trick produces the latent vector. At inference,
-    only the encoder is needed. A learned diagonal metric scales latent
-    dimensions before L2-normalization, amplifying discriminative features.
-
-    The latent dimension and metric weights are stored in the checkpoint
-    and loaded at init time (see ``_vae_config`` key in the ``.pt`` file).
 
     Args:
         model_path: Path to saved ``.pt`` weights (``torch.save`` format).
@@ -69,9 +46,6 @@ class SpeakerVAE:
     def encode(self, embedding: np.ndarray) -> np.ndarray:
         """Encode a single embedding to the latent space.
 
-        Applies the learned diagonal metric to scale dimensions, then
-        L2-normalizes so cosine similarity equals dot product.
-
         Args:
             embedding: L2-normalized ECAPA-TDNN embedding (192-dim by default).
 
@@ -82,8 +56,7 @@ class SpeakerVAE:
         t = torch.from_numpy(embedding).float().unsqueeze(0).to(self._device)
         with torch.no_grad():
             mu, _logvar = self._model.encode(t)
-            z = mu * self._model._metric_scale
-        z = z.squeeze(0).cpu().numpy()
+        z = mu.squeeze(0).cpu().numpy()
         z = z / np.linalg.norm(z)
         return z
 
@@ -100,21 +73,14 @@ class SpeakerVAE:
         t = torch.from_numpy(embeddings).float().to(self._device)
         with torch.no_grad():
             mu, _logvar = self._model.encode(t)
-            z = mu * self._model._metric_scale
-        z = z.cpu().numpy()
+        z = mu.cpu().numpy()
         norms = np.linalg.norm(z, axis=1, keepdims=True)
         z = z / norms
         return z
 
 
 class _VAE(torch.nn.Module):  # type: ignore[name-defined]
-    """Internal MLP-based VAE with learned diagonal metric.
-
-    The ``_metric_scale`` parameter is a per-dimension positive weight
-    (initialized to ones, clamped to [0.01, 10.0]) that amplifies
-    discriminative latent dimensions. It is trained alongside the encoder
-    and decoder, and applied after the encoder's mu layer at inference.
-    """
+    """Internal MLP-based VAE."""
 
     def __init__(self, input_dim: int, latent_dim: int) -> None:
         super().__init__()
@@ -136,10 +102,6 @@ class _VAE(torch.nn.Module):  # type: ignore[name-defined]
         self._fc_mu = torch.nn.Linear(64, latent_dim)
         self._fc_logvar = torch.nn.Linear(64, latent_dim)
 
-        # Learned diagonal metric: per-dimension scaling for discriminability.
-        # Initialized to ones; trained via backprop through the loss.
-        self._metric_scale = torch.nn.Parameter(torch.ones(latent_dim))
-
         self._decoder = torch.nn.Sequential(
             torch.nn.Linear(latent_dim, 64),
             torch.nn.BatchNorm1d(64),
@@ -158,7 +120,6 @@ class _VAE(torch.nn.Module):  # type: ignore[name-defined]
     @staticmethod
     def _get_torch():
         import torch
-
         return torch
 
     def encode(self, x):

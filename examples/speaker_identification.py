@@ -151,6 +151,8 @@ def generate_dialogue_turns(tts, output_dir):
 def classify_turns(turn_paths, embedder, ref_embeddings):
     ref_names = list(ref_embeddings.keys())
     ref_matrix = np.array([ref_embeddings[n] for n in ref_names])
+    ref_norms = np.linalg.norm(ref_matrix, axis=1, keepdims=True)
+    ref_matrix = ref_matrix / ref_norms
 
     print(f"\n  {'Ground Truth':>12s}  {'Predicted':>10s}  {'Sim':>5s}  Similarities")
     print(f"  {'-' * 12}  {'-' * 10}  {'-' * 5}  {'-' * 30}")

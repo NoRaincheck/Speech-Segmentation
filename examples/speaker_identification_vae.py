@@ -85,13 +85,6 @@ VAE_EPOCHS = 500
 VAE_BATCH_SIZE = 32
 VAE_LR = 1e-3
 VAE_KL_WARMUP_EPOCHS = 100
-VAE_CENTER_WEIGHT = 1.0
-VAE_MARGIN_WEIGHT = 0.3
-VAE_MARGIN = 1.0
-VAE_HARD_NEG_WEIGHT = 0.1
-VAE_HARD_NEG_MARGIN = 0.3
-VAE_PROTO_AUG_SAMPLES = 3
-VAE_PROTO_AUG_STD = 0.05
 
 REFERENCE_PHRASES = {
     "Bella": [
@@ -143,7 +136,6 @@ class _TrainingVAE(torch.nn.Module):
         )
         self._fc_mu = torch.nn.Linear(64, latent_dim)
         self._fc_logvar = torch.nn.Linear(64, latent_dim)
-        self._metric_scale = torch.nn.Parameter(torch.ones(latent_dim))
         self._decoder = torch.nn.Sequential(
             torch.nn.Linear(latent_dim, 64),
             torch.nn.BatchNorm1d(64),
@@ -177,42 +169,16 @@ class _TrainingVAE(torch.nn.Module):
         return self.decode(z), mu, logvar
 
 
-def _compute_hard_neg_loss(mu_norm: torch.Tensor, labels: torch.Tensor, n_speakers: int) -> torch.Tensor:
-    centers = torch.stack([mu_norm[labels == k].mean(0) for k in range(n_speakers)])
-    all_sims = mu_norm @ centers.T
-    mask = torch.eye(n_speakers, device=mu_norm.device)[labels].bool()
-    all_sims = all_sims.masked_fill(mask, float("-inf"))
-    hard_neg_sim = all_sims.max(dim=1).values
-    return F.relu(hard_neg_sim - (1.0 - VAE_HARD_NEG_MARGIN)).mean()
-
-
-def _sample_prototypes(
-    mu_norm: torch.Tensor, labels: torch.Tensor, n_speakers: int
-) -> tuple[torch.Tensor, torch.Tensor]:
-    centers = torch.stack([mu_norm[labels == k].mean(0) for k in range(n_speakers)])
-    aug_embs = []
-    aug_labels = []
-    for k in range(n_speakers):
-        noise = torch.randn(VAE_PROTO_AUG_SAMPLES, centers.shape[1], device=centers.device) * VAE_PROTO_AUG_STD
-        samples = centers[k].unsqueeze(0) + noise
-        samples = F.normalize(samples, dim=1)
-        aug_embs.append(samples)
-        aug_labels.append(torch.full((VAE_PROTO_AUG_SAMPLES,), k, dtype=torch.long, device=centers.device))
-    return torch.cat(aug_embs), torch.cat(aug_labels)
-
-
-def train_vae(embeddings: np.ndarray, labels: np.ndarray, save_path: str) -> None:
+def train_vae(embeddings: np.ndarray, save_path: str) -> None:
     if os.path.exists(save_path):
         print(f"  Reusing existing VAE model {save_path}")
         return
-    n_speakers = len(set(labels))
     model = _TrainingVAE(VAE_INPUT_DIM, VAE_LATENT_DIM)
     optimizer = torch.optim.Adam(model.parameters(), lr=VAE_LR, weight_decay=1e-4)
 
     data = torch.from_numpy(embeddings)
-    lbl = torch.from_numpy(labels).long()
     loader = torch.utils.data.DataLoader(
-        torch.utils.data.TensorDataset(data, lbl),
+        torch.utils.data.TensorDataset(data),
         batch_size=min(VAE_BATCH_SIZE, len(data)),
         shuffle=True,
     )
@@ -222,38 +188,12 @@ def train_vae(embeddings: np.ndarray, labels: np.ndarray, save_path: str) -> Non
     for epoch in range(1, VAE_EPOCHS + 1):
         beta = min(1.0, epoch / VAE_KL_WARMUP_EPOCHS)
         epoch_loss = 0.0
-        for batch_x, batch_y in loader:
+        for (batch_x,) in loader:
             noisy = batch_x + torch.randn_like(batch_x) * VAE_NOISE_STD
             recon, mu, logvar = model(noisy)
             recon_loss = F.mse_loss(recon, batch_x)
             kl_loss = -0.5 * torch.mean(1 + logvar - mu.pow(2) - logvar.exp())
-
-            mu_norm = F.normalize(mu, dim=1)
-            metric_mu = mu_norm * model._metric_scale
-            metric_mu = F.normalize(metric_mu, dim=1)
-
-            aug_embs, aug_labels = _sample_prototypes(metric_mu.detach(), batch_y, n_speakers)
-            all_mu = torch.cat([metric_mu, aug_embs], dim=0)
-            all_labels = torch.cat([batch_y, aug_labels], dim=0)
-
-            centers = torch.stack([all_mu[all_labels == k].mean(0) for k in range(n_speakers)])
-            center_loss = ((metric_mu - centers[batch_y]) ** 2).mean()
-
-            margin_loss = torch.tensor(0.0, device=mu.device)
-            for i in range(n_speakers):
-                for j in range(i + 1, n_speakers):
-                    dist = F.cosine_similarity(centers[i].unsqueeze(0), centers[j].unsqueeze(0))
-                    margin_loss = margin_loss + F.relu(dist - (1.0 - VAE_MARGIN))
-
-            hard_neg_loss = _compute_hard_neg_loss(metric_mu, batch_y, n_speakers)
-
-            loss = (
-                recon_loss
-                + beta * kl_loss
-                + VAE_CENTER_WEIGHT * center_loss
-                + VAE_MARGIN_WEIGHT * margin_loss
-                + VAE_HARD_NEG_WEIGHT * hard_neg_loss
-            )
+            loss = recon_loss + beta * kl_loss
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
@@ -304,21 +244,17 @@ def build_reference_embeddings(ref_paths, embedder):
 
 
 def collect_all_embeddings(ref_paths, embedder):
-    speaker_names = list(ref_paths.keys())
     embeddings = []
-    labels = []
-    for speaker_idx, (speaker, paths) in enumerate(ref_paths.items()):
+    for speaker, paths in ref_paths.items():
         for path in paths:
             audio, _ = sf.read(path, dtype="float32")
             if audio.ndim > 1:
                 audio = audio.mean(axis=1)
             emb = embedder.embed(audio)
             embeddings.append(emb)
-            labels.append(speaker_idx)
     arr = np.array(embeddings, dtype=np.float32)
-    lbl = np.array(labels, dtype=np.int64)
-    print(f"  Collected {len(arr)} embeddings for VAE training ({len(speaker_names)} speakers)")
-    return arr, lbl
+    print(f"  Collected {len(arr)} embeddings for VAE training")
+    return arr
 
 
 def generate_dialogue_turns(tts, output_dir):
@@ -382,8 +318,8 @@ def main():
     ref_embeddings = build_reference_embeddings(ref_paths, embedder)
 
     print("\n=== Step 3: Training VAE on reference embeddings ===")
-    all_embs, all_labels = collect_all_embeddings(ref_paths, embedder)
-    train_vae(all_embs, all_labels, VAE_MODEL_PATH)
+    all_embs = collect_all_embeddings(ref_paths, embedder)
+    train_vae(all_embs, VAE_MODEL_PATH)
 
     print("\n=== Step 4: Loading trained VAE ===")
     vae = SpeakerVAE(VAE_MODEL_PATH)
