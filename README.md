@@ -1,59 +1,43 @@
-# Speech Segmentation / Speaker Diarization
+# Speech Segmentation / Speaker Identification
 
-Offline speaker diarization using ONNX models (pyannote-segmentation-3.0 + ECAPA-TDNN).
+Speaker identification using ONNX models (ECAPA-TDNN embeddings + optional VAE latent space).
 
 ## Models
 
 | Model                              | Description                                                                                                                              |
 | ---------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
 | `models/model.onnx`                | Base segmentation model from [onnx-community/pyannote-segmentation-3.0](https://huggingface.co/onnx-community/pyannote-segmentation-3.0) |
-| `models/model_with_embedding.onnx` | Extended segmentation model with speaker embeddings as an additional output (generated via `conversion/speech_embedding_export.py`)       |
+| `models/model_with_embedding.onnx` | Extended segmentation model with speaker embeddings as an additional output (generated via `scripts/speech_embedding_export.py`)         |
 | `models/ecapa_tdnn.onnx`           | ECAPA-TDNN speaker embedding model (192-dim), exported from [speechbrain/spkrec-ecapa-voxceleb](https://huggingface.co/speechbrain/spkrec-ecapa-voxceleb) |
 | `models/ecapa_norm_mean.npy`       | Global embedding normalization mean for ECAPA-TDNN (192,)                                                                                |
 
 ## Usage
 
+### Few-shot speaker identification
+
+Generate TTS reference samples per speaker, build averaged speaker prototypes,
+then classify individual dialogue turns via cosine similarity:
+
+```bash
+uv run python examples/speaker_identification.py
+```
+
+### Few-shot speaker identification with VAE
+
+Same pipeline but trains a VAE on reference embeddings for improved speaker
+separation in latent space:
+
+```bash
+uv run --group vae python examples/speaker_identification_vae.py
+```
+
 ### Basic diarization
 
-Outputs detected speakers with timestamps and confidence scores:
+Segments audio into speaker turns using the pyannote ONNX model:
 
 ```bash
-uv run python speech_diarizer.py
+uv run python examples/basic_diarization.py
 ```
-
-Automatically downloads the model and sample audio (`mlk.wav`), then prints
-segments like:
-
-```
-SPEAKER_01      0.37s -    2.84s  (conf=0.951)
-SPEAKER_02      2.84s -    5.21s  (conf=0.876)
-```
-
-### Diarization with embeddings
-
-Extract per-segment speaker embeddings alongside timestamps:
-
-```bash
-uv run python speech_embedding.py
-```
-
-Output includes embedding dimensions for each segment, useful for downstream
-clustering or verification.
-
-### One-shot speaker diarization
-
-Full pipeline: generate TTS voice references, extract ECAPA-TDNN embeddings,
-segment audio with pyannote, and match segments to known speakers via
-1-shot cosine similarity:
-
-```bash
-uv run python one_shot_diarization.py
-```
-
-This demo generates a multi-speaker conversation using KittenTTS (Bella + Bruno),
-detects speech turns with the segmentation model, and assigns each turn to the
-closest reference speaker using ECAPA-TDNN embeddings. A control voice (Luna)
-is included to verify that unknown speakers are correctly rejected.
 
 ### Export segmentation model with embeddings
 
@@ -61,7 +45,7 @@ Re-exports the base ONNX model to include the LeakyRelu activation (speaker
 embeddings) as a graph output:
 
 ```bash
-uv run python conversion/speech_embedding_export.py
+uv run python scripts/speech_embedding_export.py
 # Produces: models/model_with_embedding.onnx
 ```
 
@@ -71,7 +55,7 @@ Export the SpeechBrain ECAPA-TDNN speaker embedding model to ONNX for
 standalone inference:
 
 ```bash
-uv run python conversion/ecapa_tdnn_export.py
+uv run python scripts/ecapa_tdnn_export.py
 # Produces: models/ecapa_tdnn.onnx, models/ecapa_norm_mean.npy
 ```
 
@@ -83,7 +67,7 @@ Verifies that the exported ONNX ECAPA-TDNN model produces identical embeddings
 to the original PyTorch model:
 
 ```bash
-uv run python conversion/test_ecapa_onnx.py
+uv run python scripts/test_ecapa_onnx.py
 ```
 
 Checks cosine similarity (>0.99) and max/mean absolute difference between
@@ -95,7 +79,7 @@ Analyzes the quality of speaker embeddings extracted from the segmentation
 model's embedding output:
 
 ```bash
-uv run python conversion/test_embedding_segments.py
+uv run python scripts/test_embedding_segments.py
 ```
 
 Computes:

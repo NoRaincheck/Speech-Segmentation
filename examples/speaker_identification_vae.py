@@ -1,10 +1,65 @@
-"""Few-shot speech diarization with VAE-enhanced embeddings.
+"""Few-shot speaker identification with VAE-enhanced embeddings.
 
 Trains a small VAE on the reference embeddings, then uses the learned
-latent space for improved few-shot speaker matching.
+latent space for improved speaker matching on individual dialogue turns.
 
 Requires the VAE dependency group:
-    uv run --group vae python examples/few_shot_diarization_vae.py
+    uv run --group vae python examples/speaker_identification_vae.py
+
+Example output::
+
+    Loading embedding model...
+
+    === Step 1: Generating few-shot reference samples ===
+      Reusing 3 existing reference files for Bella
+      Reusing 3 existing reference files for Bruno
+      Reusing 3 existing reference files for Luna
+
+    === Step 2: Building few-shot reference embeddings (ECAPA-TDNN) ===
+        Bella bella_ref_0.wav: emb norm=1.0000
+        Bella bella_ref_1.wav: emb norm=1.0000
+        Bella bella_ref_2.wav: emb norm=1.0000
+      Bella: averaged 3 embeddings -> prototype norm=1.0000
+        Bruno bruno_ref_0.wav: emb norm=1.0000
+        Bruno bruno_ref_1.wav: emb norm=1.0000
+        Bruno bruno_ref_2.wav: emb norm=1.0000
+      Bruno: averaged 3 embeddings -> prototype norm=1.0000
+        Luna luna_ref_0.wav: emb norm=1.0000
+        Luna luna_ref_1.wav: emb norm=1.0000
+        Luna luna_ref_2.wav: emb norm=1.0000
+      Luna: averaged 3 embeddings -> prototype norm=1.0000
+
+    === Step 3: Training VAE on reference embeddings ===
+      Collected 9 embeddings for VAE training (3 speakers)
+      Reusing existing VAE model models/speaker_vae.pt
+
+    === Step 4: Loading trained VAE ===
+      VAE: 192 -> 128 (latent)
+
+    === Step 5: Generating dialogue turns ===
+      Reusing turns/turn_00_bella.wav
+      Reusing turns/turn_01_bruno.wav
+      Reusing turns/turn_02_bella.wav
+      Reusing turns/turn_03_bruno.wav
+      Reusing turns/turn_04_bella.wav
+      Reusing turns/turn_05_bruno.wav
+      Reusing turns/turn_06_bella.wav
+      Reusing turns/turn_07_bruno.wav
+
+    === Step 6: Classifying each turn against reference speakers ===
+
+      Ground Truth   Predicted    Sim  Similarities
+      ------------  ----------  -----  ------------------------------
+             Bella       Bella  0.852  [Bella=0.852 Bruno=-0.422 Luna=0.307]
+             Bruno       Bruno  0.990  [Bella=-0.234 Bruno=0.990 Luna=-0.407]
+             Bella       Bella  0.934  [Bella=0.934 Bruno=-0.105 Luna=-0.013]
+             Bruno       Bruno  0.988  [Bella=-0.174 Bruno=0.988 Luna=-0.424]
+             Bella       Bella  0.879  [Bella=0.879 Bruno=-0.035 Luna=-0.079]
+             Bruno       Bruno  0.973  [Bella=-0.179 Bruno=0.973 Luna=-0.356]
+             Bella       Bella  0.851  [Bella=0.851 Bruno=-0.071 Luna=0.075]
+             Bruno       Bruno  0.896  [Bella=-0.124 Bruno=0.896 Luna=-0.298]
+
+      Accuracy: 8/8 turns correct (100.0%)
 """
 
 import os
@@ -15,15 +70,13 @@ import torch
 import torch.nn.functional as F
 from kittentts import KittenTTS
 
-from speech_segmentation import Diarizer, SpeakerEmbedder, SpeechSegmenter
+from speech_segmentation import SpeakerEmbedder
 from speech_segmentation.vae import SpeakerVAE
 
-SEG_MODEL_PATH = "models/model.onnx"
 EMB_MODEL_PATH = "models/ecapa_tdnn.onnx"
 NORM_MEAN_PATH = "models/ecapa_norm_mean.npy"
 VAE_MODEL_PATH = "models/speaker_vae.pt"
 TTS_SR = 24000
-SILENCE_DURATION = 0.5
 
 VAE_INPUT_DIM = 192
 VAE_LATENT_DIM = 128
@@ -90,7 +143,6 @@ class _TrainingVAE(torch.nn.Module):
         )
         self._fc_mu = torch.nn.Linear(64, latent_dim)
         self._fc_logvar = torch.nn.Linear(64, latent_dim)
-        # Learned diagonal metric: amplifies discriminative latent dimensions.
         self._metric_scale = torch.nn.Parameter(torch.ones(latent_dim))
         self._decoder = torch.nn.Sequential(
             torch.nn.Linear(latent_dim, 64),
@@ -126,26 +178,17 @@ class _TrainingVAE(torch.nn.Module):
 
 
 def _compute_hard_neg_loss(mu_norm: torch.Tensor, labels: torch.Tensor, n_speakers: int) -> torch.Tensor:
-    """For each sample, penalize the cosine similarity to its closest different-speaker center."""
     centers = torch.stack([mu_norm[labels == k].mean(0) for k in range(n_speakers)])
-    # cosine similarity of each sample to all centers: (batch, n_speakers)
     all_sims = mu_norm @ centers.T
-    # mask out the same-speaker center (set to -inf so it won't be selected)
     mask = torch.eye(n_speakers, device=mu_norm.device)[labels].bool()
     all_sims = all_sims.masked_fill(mask, float("-inf"))
-    # hardest negative = highest similarity to a different-speaker center
     hard_neg_sim = all_sims.max(dim=1).values
-    # penalize if the hardest negative is too similar (above 1 - margin)
     return F.relu(hard_neg_sim - (1.0 - VAE_HARD_NEG_MARGIN)).mean()
 
 
 def _sample_prototypes(
     mu_norm: torch.Tensor, labels: torch.Tensor, n_speakers: int
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """Sample synthetic embeddings from Gaussian around each class center.
-
-    Returns concatenated (original + synthetic) embeddings and labels.
-    """
     centers = torch.stack([mu_norm[labels == k].mean(0) for k in range(n_speakers)])
     aug_embs = []
     aug_labels = []
@@ -159,7 +202,6 @@ def _sample_prototypes(
 
 
 def train_vae(embeddings: np.ndarray, labels: np.ndarray, save_path: str) -> None:
-    """Train VAE on ECAPA-TDNN embeddings with center loss, hard negative mining, and prototype augmentation."""
     if os.path.exists(save_path):
         print(f"  Reusing existing VAE model {save_path}")
         return
@@ -176,16 +218,11 @@ def train_vae(embeddings: np.ndarray, labels: np.ndarray, save_path: str) -> Non
     )
 
     print(f"  Training VAE: {VAE_INPUT_DIM} -> {VAE_LATENT_DIM} (latent), {VAE_EPOCHS} epochs")
-    print(f"  Losses: recon + KL + {VAE_CENTER_WEIGHT:.2f}*center + {VAE_MARGIN_WEIGHT:.2f}*margin")
-    print(
-        f"          + {VAE_HARD_NEG_WEIGHT:.2f}*hard_neg({VAE_HARD_NEG_MARGIN}) + proto_aug({VAE_PROTO_AUG_SAMPLES}x{VAE_PROTO_AUG_STD})"
-    )
     model.train()
     for epoch in range(1, VAE_EPOCHS + 1):
         beta = min(1.0, epoch / VAE_KL_WARMUP_EPOCHS)
         epoch_loss = 0.0
         for batch_x, batch_y in loader:
-            # --- VAE forward pass ---
             noisy = batch_x + torch.randn_like(batch_x) * VAE_NOISE_STD
             recon, mu, logvar = model(noisy)
             recon_loss = F.mse_loss(recon, batch_x)
@@ -195,26 +232,19 @@ def train_vae(embeddings: np.ndarray, labels: np.ndarray, save_path: str) -> Non
             metric_mu = mu_norm * model._metric_scale
             metric_mu = F.normalize(metric_mu, dim=1)
 
-            # --- Prototype augmentation: synthetic latent points near each center ---
-            # These are already in metric space, used only for center/margin losses.
             aug_embs, aug_labels = _sample_prototypes(metric_mu.detach(), batch_y, n_speakers)
-
-            # Combine real + augmented for center/hard_neg losses
             all_mu = torch.cat([metric_mu, aug_embs], dim=0)
             all_labels = torch.cat([batch_y, aug_labels], dim=0)
 
-            # --- Center loss on combined set ---
             centers = torch.stack([all_mu[all_labels == k].mean(0) for k in range(n_speakers)])
             center_loss = ((metric_mu - centers[batch_y]) ** 2).mean()
 
-            # --- Margin loss: push different-speaker centers apart ---
             margin_loss = torch.tensor(0.0, device=mu.device)
             for i in range(n_speakers):
                 for j in range(i + 1, n_speakers):
                     dist = F.cosine_similarity(centers[i].unsqueeze(0), centers[j].unsqueeze(0))
                     margin_loss = margin_loss + F.relu(dist - (1.0 - VAE_MARGIN))
 
-            # --- Hard negative mining on real embeddings ---
             hard_neg_loss = _compute_hard_neg_loss(metric_mu, batch_y, n_speakers)
 
             loss = (
@@ -263,9 +293,6 @@ def build_reference_embeddings(ref_paths, embedder):
             audio, _ = sf.read(path, dtype="float32")
             if audio.ndim > 1:
                 audio = audio.mean(axis=1)
-            if len(audio) != 16000 * len(audio) // 16000:
-                num_samples = int(len(audio) * 16000 / 24000)
-                audio = np.interp(np.linspace(0, len(audio) - 1, num_samples), np.arange(len(audio)), audio)
             emb = embedder.embed(audio)
             voice_embs.append(emb)
             print(f"    {voice} {os.path.basename(path)}: emb norm={np.linalg.norm(emb):.4f}")
@@ -277,7 +304,6 @@ def build_reference_embeddings(ref_paths, embedder):
 
 
 def collect_all_embeddings(ref_paths, embedder):
-    """Extract raw ECAPA-TDNN embeddings from all reference files."""
     speaker_names = list(ref_paths.keys())
     embeddings = []
     labels = []
@@ -286,9 +312,6 @@ def collect_all_embeddings(ref_paths, embedder):
             audio, _ = sf.read(path, dtype="float32")
             if audio.ndim > 1:
                 audio = audio.mean(axis=1)
-            if len(audio) != 16000 * len(audio) // 16000:
-                num_samples = int(len(audio) * 16000 / 24000)
-                audio = np.interp(np.linspace(0, len(audio) - 1, num_samples), np.arange(len(audio)), audio)
             emb = embedder.embed(audio)
             embeddings.append(emb)
             labels.append(speaker_idx)
@@ -298,59 +321,38 @@ def collect_all_embeddings(ref_paths, embedder):
     return arr, lbl
 
 
-def generate_conversation(tts, output_path):
-    boundaries_path = output_path.rsplit(".", 1)[0] + "_turns.npy"
-    if os.path.exists(output_path) and os.path.exists(boundaries_path):
-        info = sf.info(output_path)
-        print(f"  Reusing existing {output_path} ({info.duration:.2f}s)")
-        return sf.read(output_path, dtype="float32")[0], np.load(boundaries_path, allow_pickle=True)
-    silence = np.zeros(int(TTS_SR * SILENCE_DURATION), dtype=np.float32)
-    parts = []
-    turn_durations = []
+def generate_dialogue_turns(tts, output_dir):
+    os.makedirs(output_dir, exist_ok=True)
+    turn_paths = []
     for i, (voice, text) in enumerate(DIALOGUE):
+        path = os.path.join(output_dir, f"turn_{i:02d}_{voice.lower()}.wav")
+        if os.path.exists(path):
+            print(f"  Reusing {path}")
+            turn_paths.append(path)
+            continue
         audio = tts.generate(text, voice=voice)
-        parts.append(audio)
-        turn_durations.append(len(audio) / TTS_SR)
-        if i < len(DIALOGUE) - 1:
-            parts.append(silence)
-    conversation = np.concatenate(parts)
-    sf.write(output_path, conversation, TTS_SR)
-    turn_boundaries = []
-    cum_time = 0.0
-    for idx, ((voice, _), dur) in enumerate(zip(DIALOGUE, turn_durations)):
-        turn_boundaries.append((cum_time, cum_time + dur, voice))
-        cum_time += dur + (SILENCE_DURATION if idx < len(DIALOGUE) - 1 else 0)
-    np.save(boundaries_path, np.array(turn_boundaries, dtype=object))
-    print(f"  Generated {output_path} ({len(conversation) / TTS_SR:.2f}s, {len(DIALOGUE)} turns)")
-    return conversation, turn_boundaries
+        sf.write(path, audio, TTS_SR)
+        turn_paths.append(path)
+        print(f"  Generated {path} ({len(audio) / TTS_SR:.2f}s)")
+    return turn_paths
 
 
-def evaluate_turn_classification(turn_boundaries, conv_audio_24k, embedder, ref_embeddings, vae=None):
-    """Classify each dialogue turn against reference speakers (no segmentation).
-
-    This decouples classification accuracy from pyannote's segmentation
-    boundaries, testing the embedder + VAE + classifier in isolation.
-    """
-    print("\n=== Decoupled Turn Classification (no segmentation) ===")
+def classify_turns(turn_paths, embedder, ref_embeddings, vae=None):
     ref_names = list(ref_embeddings.keys())
     ref_matrix = np.array([ref_embeddings[n] for n in ref_names])
     if vae is not None:
         ref_matrix = vae.encode_batch(ref_matrix)
 
+    print(f"\n  {'Ground Truth':>12s}  {'Predicted':>10s}  {'Sim':>5s}  Similarities")
+    print(f"  {'-' * 12}  {'-' * 10}  {'-' * 5}  {'-' * 30}")
+
     correct = 0
-    for t_start, t_end, gt_voice in turn_boundaries:
-        s_24k = int(t_start * TTS_SR)
-        e_24k = int(t_end * TTS_SR)
-        chunk_24k = conv_audio_24k[s_24k:e_24k]
-        if len(chunk_24k) == 0:
-            continue
-        num_samples = int(len(chunk_24k) * 16000 / TTS_SR)
-        chunk_16k = np.interp(
-            np.linspace(0, len(chunk_24k) - 1, num_samples),
-            np.arange(len(chunk_24k)),
-            chunk_24k,
-        ).astype(np.float32)
-        emb = embedder.embed(chunk_16k)
+    for i, path in enumerate(turn_paths):
+        gt_voice = DIALOGUE[i][0]
+        audio, _ = sf.read(path, dtype="float32")
+        if audio.ndim > 1:
+            audio = audio.mean(axis=1)
+        emb = embedder.embed(audio)
         if vae is not None:
             emb = vae.encode(emb)
         emb = emb / np.linalg.norm(emb)
@@ -362,42 +364,15 @@ def evaluate_turn_classification(turn_boundaries, conv_audio_24k, embedder, ref_
             correct += 1
         mark = "" if is_correct else " [WRONG]"
         sim_str = " ".join(f"{n}={s:.3f}" for n, s in zip(ref_names, sims))
-        print(f"  {gt_voice:5s} -> {pred:5s} (sim={sims[best_idx]:.3f}) [{sim_str}]{mark}")
+        print(f"  {gt_voice:>12s}  {pred:>10s}  {sims[best_idx]:5.3f}  [{sim_str}]{mark}")
 
-    print(f"  Turn accuracy: {correct}/{len(turn_boundaries)} ({correct / len(turn_boundaries) * 100:.1f}%)")
-    return correct, len(turn_boundaries)
-
-
-def extract_per_speaker_audio(matches, conv_audio_24k):
-    speaker_segments = {}
-    for m in matches:
-        name = m.speaker
-        speaker_segments.setdefault(name, []).append(m)
-
-    results = {}
-    for name, segs in speaker_segments.items():
-        parts = []
-        for m in segs:
-            start_16k = m.start_frame * 270
-            end_16k = m.end_frame * 270
-            start_24k = int(start_16k * TTS_SR / 16000)
-            end_24k = int(end_16k * TTS_SR / 16000)
-            start_24k = min(start_24k, len(conv_audio_24k))
-            end_24k = min(end_24k, len(conv_audio_24k))
-            if start_24k < end_24k:
-                parts.append(conv_audio_24k[start_24k:end_24k])
-        if parts:
-            audio = np.concatenate(parts)
-            path = f"{name.lower()}.wav"
-            sf.write(path, audio, TTS_SR)
-            results[name] = {"path": path, "duration": len(audio) / TTS_SR, "segments": len(segs)}
-    return results
+    print(f"\n  Accuracy: {correct}/{len(turn_paths)} turns correct ({correct / len(turn_paths) * 100:.1f}%)")
+    return correct, len(turn_paths)
 
 
 def main():
     tts = KittenTTS("KittenML/kitten-tts-nano-0.8")
-    print("Loading ONNX models...")
-    segmenter = SpeechSegmenter(SEG_MODEL_PATH)
+    print("Loading embedding model...")
     embedder = SpeakerEmbedder(EMB_MODEL_PATH, NORM_MEAN_PATH)
 
     print("\n=== Step 1: Generating few-shot reference samples ===")
@@ -414,78 +389,11 @@ def main():
     vae = SpeakerVAE(VAE_MODEL_PATH)
     print(f"  VAE: {vae.INPUT_DIM} -> {vae.LATENT_DIM} (latent)")
 
-    diarizer = Diarizer(segmenter, embedder, vae=vae)
-    diarizer.build_references(ref_embeddings)
+    print("\n=== Step 5: Generating dialogue turns ===")
+    turn_paths = generate_dialogue_turns(tts, "turns")
 
-    print("\n=== Step 5: Generating conversation ===")
-    conv_audio, turn_boundaries = generate_conversation(tts, "conversation.wav")
-
-    print("\n=== Step 6: Segmenting conversation (pyannote) ===")
-    conv_audio_16k, _ = sf.read("conversation.wav", dtype="float32")
-    if conv_audio_16k.ndim > 1:
-        conv_audio_16k = conv_audio_16k.mean(axis=1)
-
-    print("\n=== Step 7: Few-shot speaker matching (VAE latent) ===")
-    matches, segments = diarizer.diarize(conv_audio_16k)
-    print(f"  Detected {len(segments)} speech segments")
-    for i, m in enumerate(matches):
-        sim_str = " ".join(f"{k}={v:.3f}" for k, v in m.all_sims.items())
-        print(
-            f"  Seg {i:2d} ({m.start_time:5.2f}s-{m.end_time:5.2f}s): "
-            f"{m.speaker:5s} (sim={m.similarity:.3f}) [{sim_str}]"
-        )
-
-    print("\n  --- Reference Similarity Summary ---")
-    for name in REFERENCE_PHRASES:
-        sims = [m.all_sims[name] for m in matches]
-        avg = np.mean(sims)
-        is_control = name == "Luna"
-        marker = " (control - should be low)" if is_control else ""
-        print(f"  {name:6s} avg sim: {avg:.3f}{marker}")
-
-    print("\n=== Step 8: Extracting per-speaker audio ===")
-    conv_audio_24k, _ = sf.read("conversation.wav", dtype="float32")
-    results = extract_per_speaker_audio(matches, conv_audio_24k)
-    for name, info in sorted(results.items()):
-        print(f"  {name}: {info['segments']} segments, {info['duration']:.1f}s total -> {info['path']}")
-
-    evaluate_turn_classification(turn_boundaries, conv_audio_24k, embedder, ref_embeddings, vae=vae)
-
-    print("\n=== Summary ===")
-
-    def _ground_truth(mid_time: float) -> str:
-        for t_start, t_end, voice in turn_boundaries:
-            if t_start <= mid_time < t_end:
-                return voice
-        return "Unknown"
-
-    for i, m in enumerate(matches):
-        mid = (m.start_time + m.end_time) / 2
-        gt_voice = _ground_truth(mid)
-        correct = m.speaker == gt_voice
-        mark = "" if correct else " [WRONG]"
-        print(f"  Seg {i:2d} ({m.start_time:5.2f}s-{m.end_time:5.2f}s): {m.speaker:5s} sim={m.similarity:.3f}  gt={gt_voice:5s}{mark}")
-
-    correct_count = sum(
-        1 for m in matches
-        if _ground_truth((m.start_time + m.end_time) / 2) != "Unknown"
-        and m.speaker == _ground_truth((m.start_time + m.end_time) / 2)
-    )
-    total = sum(
-        1 for m in matches
-        if _ground_truth((m.start_time + m.end_time) / 2) != "Unknown"
-    )
-    print(f"\n  Accuracy: {correct_count}/{total} segments correct ({correct_count / total * 100:.1f}%)")
-
-    for name in REFERENCE_PHRASES:
-        segs_for_name = [m for m in matches if m.speaker == name]
-        if segs_for_name:
-            avg_sim = np.mean([m.similarity for m in segs_for_name])
-            label = "CONTROL (should be absent)" if name == "Luna" else "SPEAKER"
-            print(f"  {name:6s}: {len(segs_for_name):2d} segments, avg sim={avg_sim:.3f} [{label}]")
-        else:
-            label = "correctly absent" if name == "Luna" else "not detected"
-            print(f"  {name:6s}: 0 segments [{label}]")
+    print("\n=== Step 6: Classifying each turn against reference speakers ===")
+    classify_turns(turn_paths, embedder, ref_embeddings, vae=vae)
 
 
 if __name__ == "__main__":
