@@ -35,11 +35,19 @@ class Diarizer:
     Args:
         segmenter: SpeechSegmenter instance.
         embedder: SpeakerEmbedder instance.
+        vae: Optional SpeakerVAE instance. When provided, all embeddings are
+            projected through the VAE encoder before matching.
     """
 
-    def __init__(self, segmenter: SpeechSegmenter, embedder: SpeakerEmbedder) -> None:
+    def __init__(
+        self,
+        segmenter: SpeechSegmenter,
+        embedder: SpeakerEmbedder,
+        vae: object | None = None,
+    ) -> None:
         self.segmenter = segmenter
         self.embedder = embedder
+        self._vae = vae
 
     def build_references(self, ref_embeddings: dict[str, np.ndarray]) -> None:
         """Set reference speaker embeddings for matching.
@@ -48,7 +56,10 @@ class Diarizer:
             ref_embeddings: Mapping of speaker name to L2-normalized embedding.
         """
         self._ref_names = list(ref_embeddings.keys())
-        self._ref_matrix = np.array([ref_embeddings[n] for n in self._ref_names])
+        ref_matrix = np.array([ref_embeddings[n] for n in self._ref_names])
+        if self._vae is not None:
+            ref_matrix = self._vae.encode_batch(ref_matrix)
+        self._ref_matrix = ref_matrix
 
     def diarize(self, audio_16k: np.ndarray) -> tuple[list[DiarizationMatch], list]:
         """Segment audio and match each segment to known speakers.
@@ -92,7 +103,10 @@ class Diarizer:
         segment_audio = audio_16k[start_sample:end_sample]
         if len(segment_audio) < MIN_SEGMENT_SAMPLES:
             return None
-        return self.embedder.embed(segment_audio)
+        emb = self.embedder.embed(segment_audio)
+        if self._vae is not None:
+            emb = self._vae.encode(emb)
+        return emb
 
     def _cosine_similarity_matrix(self, emb: np.ndarray) -> np.ndarray:
         return self._ref_matrix @ emb

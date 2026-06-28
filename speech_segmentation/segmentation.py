@@ -48,9 +48,7 @@ class SpeechSegmenter:
         Returns:
             List of detected speech segments.
         """
-        logits = self.session.run(
-            None, {"input_values": audio_16k[np.newaxis, np.newaxis, :].astype(np.float32)}
-        )[0]
+        logits = self.session.run(None, {"input_values": audio_16k[np.newaxis, np.newaxis, :].astype(np.float32)})[0]
         frame_logits = logits[0]
         exps = np.exp(frame_logits - frame_logits.max(axis=1, keepdims=True))
         probs = exps / exps.sum(axis=1, keepdims=True)

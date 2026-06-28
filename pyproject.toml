@@ -22,6 +22,9 @@ export = [
     "speechbrain>=1.1.0",
     "torch",
 ]
+vae = [
+    "torch",
+]
 demo = [
     "kittentts",
     "scikit-learn>=1.8.0",

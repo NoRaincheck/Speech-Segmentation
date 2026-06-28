@@ -1,10 +1,10 @@
-"""One-shot speech diarization example.
+"""Few-shot speech diarization example.
 
 Generates reference utterances, builds speaker prototypes, then diarizes
 a conversation and matches segments to known speakers.
 
 Usage:
-    uv run python examples/one_shot_diarization.py
+    uv run python examples/few_shot_diarization.py
 """
 
 import os
@@ -55,11 +55,14 @@ def generate_reference_samples(tts, ref_dir):
     os.makedirs(ref_dir, exist_ok=True)
     ref_paths = {}
     for voice, phrases in REFERENCE_PHRASES.items():
+        paths = [os.path.join(ref_dir, f"{voice.lower()}_ref_{j}.wav") for j in range(len(phrases))]
+        ref_paths[voice] = paths
+        if all(os.path.exists(p) for p in paths):
+            print(f"  Reusing {len(phrases)} existing reference files for {voice}")
+            continue
         for j, phrase in enumerate(phrases):
             audio = tts.generate(phrase, voice=voice)
-            path = os.path.join(ref_dir, f"{voice.lower()}_ref_{j}.wav")
-            sf.write(path, audio, TTS_SR)
-        ref_paths[voice] = [os.path.join(ref_dir, f"{voice.lower()}_ref_{j}.wav") for j in range(len(phrases))]
+            sf.write(paths[j], audio, TTS_SR)
         print(f"  Generated {len(phrases)} reference files for {voice}")
     return ref_paths
 
@@ -86,17 +89,30 @@ def build_reference_embeddings(ref_paths, embedder):
 
 
 def generate_conversation(tts, output_path):
+    boundaries_path = output_path.rsplit(".", 1)[0] + "_turns.npy"
+    if os.path.exists(output_path) and os.path.exists(boundaries_path):
+        info = sf.info(output_path)
+        print(f"  Reusing existing {output_path} ({info.duration:.2f}s)")
+        return sf.read(output_path, dtype="float32")[0], np.load(boundaries_path, allow_pickle=True)
     silence = np.zeros(int(TTS_SR * SILENCE_DURATION), dtype=np.float32)
     parts = []
+    turn_durations = []
     for i, (voice, text) in enumerate(DIALOGUE):
         audio = tts.generate(text, voice=voice)
         parts.append(audio)
+        turn_durations.append(len(audio) / TTS_SR)
         if i < len(DIALOGUE) - 1:
             parts.append(silence)
     conversation = np.concatenate(parts)
     sf.write(output_path, conversation, TTS_SR)
+    turn_boundaries = []
+    cum_time = 0.0
+    for idx, ((voice, _), dur) in enumerate(zip(DIALOGUE, turn_durations)):
+        turn_boundaries.append((cum_time, cum_time + dur, voice))
+        cum_time += dur + (SILENCE_DURATION if idx < len(DIALOGUE) - 1 else 0)
+    np.save(boundaries_path, np.array(turn_boundaries, dtype=object))
     print(f"  Generated {output_path} ({len(conversation) / TTS_SR:.2f}s, {len(DIALOGUE)} turns)")
-    return conversation
+    return conversation, turn_boundaries
 
 
 def extract_per_speaker_audio(matches, conv_audio_24k):
@@ -132,22 +148,22 @@ def main():
     embedder = SpeakerEmbedder(EMB_MODEL_PATH, NORM_MEAN_PATH)
     diarizer = Diarizer(segmenter, embedder)
 
-    print("\n=== Step 1: Generating 1-shot reference samples ===")
+    print("\n=== Step 1: Generating few-shot reference samples ===")
     ref_paths = generate_reference_samples(tts, "refs")
 
-    print("\n=== Step 2: Building 1-shot reference embeddings (ECAPA-TDNN) ===")
+    print("\n=== Step 2: Building few-shot reference embeddings (ECAPA-TDNN) ===")
     ref_embeddings = build_reference_embeddings(ref_paths, embedder)
     diarizer.build_references(ref_embeddings)
 
     print("\n=== Step 3: Generating conversation ===")
-    conv_audio = generate_conversation(tts, "conversation.wav")
+    conv_audio, turn_boundaries = generate_conversation(tts, "conversation.wav")
 
     print("\n=== Step 4: Segmenting conversation (pyannote) ===")
     conv_audio_16k, _ = sf.read("conversation.wav", dtype="float32")
     if conv_audio_16k.ndim > 1:
         conv_audio_16k = conv_audio_16k.mean(axis=1)
 
-    print("\n=== Step 5: 1-shot speaker matching (ECAPA-TDNN embeddings) ===")
+    print("\n=== Step 5: Few-shot speaker matching (ECAPA-TDNN) ===")
     matches, segments = diarizer.diarize(conv_audio_16k)
     print(f"  Detected {len(segments)} speech segments")
     for i, m in enumerate(matches):
@@ -172,6 +188,31 @@ def main():
         print(f"  {name}: {info['segments']} segments, {info['duration']:.1f}s total -> {info['path']}")
 
     print("\n=== Summary ===")
+
+    def _ground_truth(mid_time: float) -> str:
+        for t_start, t_end, voice in turn_boundaries:
+            if t_start <= mid_time < t_end:
+                return voice
+        return "Unknown"
+
+    for i, m in enumerate(matches):
+        mid = (m.start_time + m.end_time) / 2
+        gt_voice = _ground_truth(mid)
+        correct = m.speaker == gt_voice
+        mark = "" if correct else " [WRONG]"
+        print(f"  Seg {i:2d} ({m.start_time:5.2f}s-{m.end_time:5.2f}s): {m.speaker:5s} sim={m.similarity:.3f}  gt={gt_voice:5s}{mark}")
+
+    correct_count = sum(
+        1 for m in matches
+        if _ground_truth((m.start_time + m.end_time) / 2) != "Unknown"
+        and m.speaker == _ground_truth((m.start_time + m.end_time) / 2)
+    )
+    total = sum(
+        1 for m in matches
+        if _ground_truth((m.start_time + m.end_time) / 2) != "Unknown"
+    )
+    print(f"\n  Accuracy: {correct_count}/{total} segments correct ({correct_count / total * 100:.1f}%)")
+
     for name in REFERENCE_PHRASES:
         segs_for_name = [m for m in matches if m.speaker == name]
         if segs_for_name:

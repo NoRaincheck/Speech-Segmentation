@@ -1636,6 +1636,9 @@ export = [
     { name = "speechbrain" },
     { name = "torch" },
 ]
+vae = [
+    { name = "torch" },
+]
 
 [package.metadata]
 requires-dist = [
@@ -1661,6 +1664,7 @@ export = [
     { name = "speechbrain", specifier = ">=1.1.0" },
     { name = "torch" },
 ]
+vae = [{ name = "torch" }]
 
 [[package]]
 name = "speechbrain"
