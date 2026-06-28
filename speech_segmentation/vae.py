@@ -90,11 +90,9 @@ class VAE(torch.nn.Module):  # type: ignore[name-defined]
             torch.nn.Linear(input_dim, 256),
             torch.nn.BatchNorm1d(256),
             torch.nn.LeakyReLU(0.2),
-            torch.nn.Dropout(0.3),
             torch.nn.Linear(256, 128),
             torch.nn.BatchNorm1d(128),
             torch.nn.LeakyReLU(0.2),
-            torch.nn.Dropout(0.3),
             torch.nn.Linear(128, 64),
             torch.nn.BatchNorm1d(64),
             torch.nn.LeakyReLU(0.2),
@@ -106,11 +104,9 @@ class VAE(torch.nn.Module):  # type: ignore[name-defined]
             torch.nn.Linear(latent_dim, 64),
             torch.nn.BatchNorm1d(64),
             torch.nn.ReLU(),
-            torch.nn.Dropout(0.3),
             torch.nn.Linear(64, 128),
             torch.nn.BatchNorm1d(128),
             torch.nn.ReLU(),
-            torch.nn.Dropout(0.3),
             torch.nn.Linear(128, 256),
             torch.nn.BatchNorm1d(256),
             torch.nn.ReLU(),
@@ -120,6 +116,7 @@ class VAE(torch.nn.Module):  # type: ignore[name-defined]
     @staticmethod
     def _get_torch():
         import torch
+
         return torch
 
     def encode(self, x):
@@ -127,8 +124,7 @@ class VAE(torch.nn.Module):  # type: ignore[name-defined]
         h = self._encoder(x)
         return self._fc_mu(h), self._fc_logvar(h)
 
-    @staticmethod
-    def _reparameterize(mu, logvar):
+    def _reparameterize(self, mu, logvar):
         torch = self._get_torch()
         std = torch.exp(0.5 * logvar)
         eps = torch.randn_like(std)
