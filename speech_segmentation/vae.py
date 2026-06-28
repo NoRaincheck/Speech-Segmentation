@@ -39,7 +39,7 @@ class SpeakerVAE:
         self.INPUT_DIM = config["input_dim"]
         self.LATENT_DIM = config["latent_dim"]
 
-        self._model = _VAE(self.INPUT_DIM, self.LATENT_DIM).to(self._device)
+        self._model = VAE(self.INPUT_DIM, self.LATENT_DIM).to(self._device)
         self._model.load_state_dict(checkpoint["state_dict"])
         self._model.eval()
 
@@ -79,8 +79,8 @@ class SpeakerVAE:
         return z
 
 
-class _VAE(torch.nn.Module):  # type: ignore[name-defined]
-    """Internal MLP-based VAE."""
+class VAE(torch.nn.Module):  # type: ignore[name-defined]
+    """MLP-based VAE used for training and inference."""
 
     def __init__(self, input_dim: int, latent_dim: int) -> None:
         super().__init__()

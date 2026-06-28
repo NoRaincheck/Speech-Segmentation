@@ -71,7 +71,7 @@ import torch.nn.functional as F
 from kittentts import KittenTTS
 
 from speech_segmentation import SpeakerEmbedder
-from speech_segmentation.vae import SpeakerVAE
+from speech_segmentation.vae import SpeakerVAE, VAE
 
 EMB_MODEL_PATH = "models/ecapa_tdnn.onnx"
 NORM_MEAN_PATH = "models/ecapa_norm_mean.npy"
@@ -116,64 +116,11 @@ DIALOGUE = [
 ]
 
 
-class _TrainingVAE(torch.nn.Module):
-    """MLP-VAE used only during training (same architecture as SpeakerVAE)."""
-
-    def __init__(self, input_dim: int, latent_dim: int) -> None:
-        super().__init__()
-        self._encoder = torch.nn.Sequential(
-            torch.nn.Linear(input_dim, 256),
-            torch.nn.BatchNorm1d(256),
-            torch.nn.LeakyReLU(0.2),
-            torch.nn.Dropout(0.3),
-            torch.nn.Linear(256, 128),
-            torch.nn.BatchNorm1d(128),
-            torch.nn.LeakyReLU(0.2),
-            torch.nn.Dropout(0.3),
-            torch.nn.Linear(128, 64),
-            torch.nn.BatchNorm1d(64),
-            torch.nn.LeakyReLU(0.2),
-        )
-        self._fc_mu = torch.nn.Linear(64, latent_dim)
-        self._fc_logvar = torch.nn.Linear(64, latent_dim)
-        self._decoder = torch.nn.Sequential(
-            torch.nn.Linear(latent_dim, 64),
-            torch.nn.BatchNorm1d(64),
-            torch.nn.ReLU(),
-            torch.nn.Dropout(0.3),
-            torch.nn.Linear(64, 128),
-            torch.nn.BatchNorm1d(128),
-            torch.nn.ReLU(),
-            torch.nn.Dropout(0.3),
-            torch.nn.Linear(128, 256),
-            torch.nn.BatchNorm1d(256),
-            torch.nn.ReLU(),
-            torch.nn.Linear(256, input_dim),
-        )
-
-    def encode(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        h = self._encoder(x)
-        return self._fc_mu(h), self._fc_logvar(h)
-
-    @staticmethod
-    def _reparameterize(mu: torch.Tensor, logvar: torch.Tensor) -> torch.Tensor:
-        std = torch.exp(0.5 * logvar)
-        return mu + torch.randn_like(std) * std
-
-    def decode(self, z: torch.Tensor) -> torch.Tensor:
-        return self._decoder(z)
-
-    def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        mu, logvar = self.encode(x)
-        z = self._reparameterize(mu, logvar)
-        return self.decode(z), mu, logvar
-
-
 def train_vae(embeddings: np.ndarray, save_path: str) -> None:
     if os.path.exists(save_path):
         print(f"  Reusing existing VAE model {save_path}")
         return
-    model = _TrainingVAE(VAE_INPUT_DIM, VAE_LATENT_DIM)
+    model = VAE(VAE_INPUT_DIM, VAE_LATENT_DIM)
     optimizer = torch.optim.Adam(model.parameters(), lr=VAE_LR, weight_decay=1e-4)
 
     data = torch.from_numpy(embeddings)
