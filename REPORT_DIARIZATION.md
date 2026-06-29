@@ -159,6 +159,32 @@ where the segmenter produces fragments of varying quality and duration. The accu
 (30-70% vs 87-100%) reflects this fundamental difference in input quality, not a flaw in
 the identification method.
 
+## Pipeline Fixes
+
+Three changes to `speech_segmentation/diarizer.py` address the ML pipeline issues
+that cause poor diarization accuracy:
+
+### 1. Merge consecutive same-cluster segments
+
+The pyannote segmenter assigns cluster labels (1/2/3) per frame and groups
+consecutive same-label frames into segments.  Over-segmentation sometimes splits
+a single speaker's turn into multiple short fragments with the same cluster ID.
+`_merge_by_cluster()` collapses these back into longer, more reliable segments
+before embedding.
+
+### 2. Filter short segments before matching
+
+ECAPA-TDNN needs ~1s of speech for a reliable speaker embedding.  Segments
+below `MIN_EMBED_SAMPLES` (12800 samples = 0.8s at 16kHz) are now skipped
+entirely rather than being embedded and matched.  This removes the most
+error-prone predictions.
+
+### 3. Improve short-segment padding
+
+For any remaining segments between 0.5s and 0.8s, `_pad_and_repeat()` now
+repeats the segment's own audio instead of padding with silence.  Silence
+padding corrupts the speaker embedding by diluting the spectral characteristics.
+
 ## Files Modified
 
 - **All three diarization examples**: Updated `evaluate_diarization()` to show
@@ -178,3 +204,8 @@ the identification method.
   `classify()` method to `VAE` class for future supervised training experiments.
   The classification head is not used in the current labelled VAE example since
   standard VAE loss outperforms supervised losses at this data scale.
+
+- **`speech_segmentation/diarizer.py`**: Added `_merge_by_cluster()` for
+  post-segmentation merging, `MIN_EMBED_SAMPLES` threshold for short-segment
+  filtering, and improved `_pad_and_repeat()` to repeat audio instead of
+  padding with silence.

@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import numpy as np
 import torch
+import torch.nn.functional as F
 
 
 class SpeakerVAE:
@@ -101,9 +102,11 @@ class VAE(torch.nn.Module):  # type: ignore[name-defined]
             torch.nn.Linear(input_dim, 256),
             torch.nn.BatchNorm1d(256),
             torch.nn.LeakyReLU(0.2),
+            torch.nn.Dropout(0.3),
             torch.nn.Linear(256, 128),
             torch.nn.BatchNorm1d(128),
             torch.nn.LeakyReLU(0.2),
+            torch.nn.Dropout(0.3),
             torch.nn.Linear(128, 64),
             torch.nn.BatchNorm1d(64),
             torch.nn.LeakyReLU(0.2),
@@ -115,9 +118,11 @@ class VAE(torch.nn.Module):  # type: ignore[name-defined]
             torch.nn.Linear(latent_dim, 64),
             torch.nn.BatchNorm1d(64),
             torch.nn.ReLU(),
+            torch.nn.Dropout(0.3),
             torch.nn.Linear(64, 128),
             torch.nn.BatchNorm1d(128),
             torch.nn.ReLU(),
+            torch.nn.Dropout(0.3),
             torch.nn.Linear(128, 256),
             torch.nn.BatchNorm1d(256),
             torch.nn.ReLU(),
@@ -167,3 +172,95 @@ class VAE(torch.nn.Module):  # type: ignore[name-defined]
         mu, logvar = self.encode(x)
         z = self._reparameterize(mu, logvar)
         return self.decode(z), mu, logvar
+
+
+def supervised_contrastive_loss(
+    features: torch.Tensor,
+    labels: torch.Tensor,
+    temperature: float = 0.1,
+) -> torch.Tensor:
+    """Compute supervised contrastive loss (Wu et al. 2018, CVPR).
+
+    Pulls same-speaker embeddings together and pushes different-speaker
+    embeddings apart in the latent space.
+
+    Args:
+        features: L2-normalized feature tensor of shape (batch, latent_dim).
+        labels: Speaker label tensor of shape (batch,).
+        temperature: Temperature scaling factor. Lower = harder contrasts.
+
+    Returns:
+        Scalar loss tensor.
+    """
+    device = features.device
+    batch_size = features.shape[0]
+
+    if batch_size <= 1:
+        return torch.tensor(0.0, device=device)
+
+    features = features / (features.norm(dim=1, keepdim=True) + 1e-8)
+
+    sim_matrix = torch.matmul(features, features.T) / temperature
+
+    labels = labels.unsqueeze(0)
+    mask = (labels == labels.T).float().to(device)
+
+    logits_mask = torch.ones_like(sim_matrix) - torch.eye(batch_size, device=device)
+    sim_matrix = sim_matrix * logits_mask
+
+    sim_matrix = torch.clamp(sim_matrix, min=-10.0, max=10.0)
+    exp_sim = torch.exp(sim_matrix)
+    log_prob = sim_matrix - torch.log(exp_sim.sum(dim=1, keepdim=True) + 1e-8)
+
+    mask_sum = mask.sum(dim=1)
+    mean_log_prob = (mask * log_prob).sum(dim=1) / (mask_sum + 1e-8)
+
+    loss = -mean_log_prob[mask_sum > 0].mean()
+    return loss
+
+
+def prototypical_loss(
+    features: torch.Tensor,
+    labels: torch.Tensor,
+    n_speakers: int,
+    temperature: float = 0.1,
+) -> torch.Tensor:
+    """Compute prototypical network loss (Snell et al. 2017, ICML).
+
+    Optimizes for prototype-based classification in the latent space.
+
+    Args:
+        features: L2-normalized feature tensor of shape (batch, latent_dim).
+        labels: Speaker label tensor of shape (batch,).
+        n_speakers: Number of unique speakers.
+        temperature: Temperature for softmax. Lower = sharper predictions.
+
+    Returns:
+        Scalar loss tensor.
+    """
+    device = features.device
+
+    prototypes = torch.zeros(n_speakers, features.shape[1], device=device)
+    counts = torch.zeros(n_speakers, device=device)
+
+    for i in range(n_speakers):
+        mask = labels == i
+        if mask.sum() > 0:
+            prototypes[i] = features[mask].mean(dim=0)
+            counts[i] = mask.sum()
+
+    prototypes = F.normalize(prototypes, dim=1)
+
+    valid_mask = counts > 0
+    if valid_mask.sum() < 2:
+        return torch.tensor(0.0, device=device)
+
+    logits = torch.matmul(features, prototypes[valid_mask].T) / temperature
+    targets = torch.zeros(len(features), dtype=torch.long, device=device)
+
+    speaker_to_idx = {s.item(): i for i, s in enumerate(valid_mask.nonzero().squeeze(1))}
+    for i, label in enumerate(labels):
+        targets[i] = speaker_to_idx[label.item()]
+
+    loss = F.cross_entropy(logits, targets)
+    return loss
