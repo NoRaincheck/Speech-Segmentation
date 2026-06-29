@@ -18,12 +18,10 @@ class SpeakerEmbedder:
 
     Args:
         model_path: Path to the ECAPA-TDNN ONNX model file.
-        norm_mean_path: Path to the normalization mean (.npy) file.
     """
 
-    def __init__(self, model_path: str, norm_mean_path: str) -> None:
+    def __init__(self, model_path: str) -> None:
         self.session = ort.InferenceSession(model_path)
-        self.norm_mean = np.load(norm_mean_path)
 
     def embed(self, audio_16k: np.ndarray) -> np.ndarray:
         """Extract speaker embedding from 16kHz audio.
@@ -36,7 +34,7 @@ class SpeakerEmbedder:
         """
         fbank = extract_fbank(audio_16k)
         raw_emb = self.session.run(None, {"input_values": fbank[np.newaxis].astype(np.float32)})[0]
-        emb = raw_emb.flatten() - self.norm_mean
+        emb = raw_emb.flatten()
         emb = emb / np.linalg.norm(emb)
         return emb
 

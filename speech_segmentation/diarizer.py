@@ -12,6 +12,7 @@ from speech_segmentation.segmentation import SpeechSegmenter
 FRAME_STEP = 270
 TARGET_SR = 16000
 MIN_SEGMENT_SAMPLES = 8000
+MIN_EMBED_SAMPLES = 12800
 
 
 @dataclass
@@ -82,11 +83,20 @@ class Diarizer:
         Returns:
             Tuple of (list of DiarizationMatch, list of raw Segments).
         """
-        segments = self.segmenter.segment(audio_16k)
+        raw_segments = self.segmenter.segment(audio_16k)
+        segments = self._filter_short_segments(raw_segments)
         matches = self._match_segments(audio_16k, segments)
         if stitch_threshold is not None:
             matches = self._stitch_segments(audio_16k, matches, stitch_threshold, stitch_raw)
-        return matches, segments
+        return matches, raw_segments
+
+    def _filter_short_segments(self, segments: list) -> list:
+        """Drop segments shorter than MIN_EMBED_SAMPLES.
+
+        ECAPA-TDNN needs ~1s of speech for a reliable speaker embedding.
+        Very short segments produce noisy embeddings that hurt matching.
+        """
+        return [s for s in segments if (s.end_frame - s.start_frame) * FRAME_STEP >= MIN_EMBED_SAMPLES]
 
     def _match_segments(self, audio_16k: np.ndarray, segments: list) -> list[DiarizationMatch]:
         matches: list[DiarizationMatch] = []
@@ -194,11 +204,13 @@ class Diarizer:
         return self.embedder.embed(segment_audio)
 
     def _pad_and_repeat(self, audio: np.ndarray) -> np.ndarray:
-        """Pad short audio with silence and repeat until MIN_SEGMENT_SAMPLES."""
-        padding = np.zeros(MIN_SEGMENT_SAMPLES - len(audio), dtype=audio.dtype)
-        padded = np.concatenate([audio, padding])
-        repeats = MIN_SEGMENT_SAMPLES // len(padded) + 1
-        return np.tile(padded, repeats)[:MIN_SEGMENT_SAMPLES]
+        """Pad short audio by repeating the segment until MIN_SEGMENT_SAMPLES.
+
+        Repeats the segment's own audio instead of padding with silence,
+        which would corrupt the speaker embedding.
+        """
+        repeats = MIN_SEGMENT_SAMPLES // len(audio) + 1
+        return np.tile(audio, repeats)[:MIN_SEGMENT_SAMPLES]
 
     def _cosine_similarity_matrix(self, emb: np.ndarray) -> np.ndarray:
         return self._ref_matrix @ emb
