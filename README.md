@@ -8,41 +8,38 @@ Speaker identification using ONNX models (ECAPA-TDNN embeddings + optional VAE l
 | ---------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
 | `models/model.onnx`                | Base segmentation model from [onnx-community/pyannote-segmentation-3.0](https://huggingface.co/onnx-community/pyannote-segmentation-3.0) |
 | `models/ecapa_tdnn.onnx`           | ECAPA-TDNN speaker embedding model (192-dim), exported from [speechbrain/spkrec-ecapa-voxceleb](https://huggingface.co/speechbrain/spkrec-ecapa-voxceleb) |
-| `models/ecapa_norm_mean.npy`       | Global embedding normalization mean for ECAPA-TDNN (192,)                                                                                |
 
-## Usage
+## Examples
 
-### Few-shot speaker identification
-
-Generate TTS reference samples per speaker, build averaged speaker prototypes,
-then classify individual dialogue turns via cosine similarity:
+Three well-commented examples demonstrating the core workflows:
 
 ```bash
-uv run python examples/speaker_identification.py
-```
-
-### Few-shot speaker identification with VAE
-
-Same pipeline but trains a VAE on reference embeddings for improved speaker
-separation in latent space:
-
-```bash
-uv run --group vae python examples/speaker_identification_vae.py
-```
-
-### Basic diarization
-
-Segments audio into speaker turns using the pyannote ONNX model:
-
-```bash
+# 1. Basic diarization — segment audio into speaker turns (no reference needed)
 uv run python examples/basic_diarization.py
+
+# 2. Few-shot classification — identify speakers from reference clips
+uv run python examples/few_shot_classification.py
+
+# 3. VAE cross-engine — when VAE improves matching across TTS engines
+uv run --group vae python examples/vae_cross_engine.py
 ```
+
+## Demos
+
+Additional demos exploring ablations and edge cases:
+
+```bash
+uv run python demos/diarization.py
+uv run python demos/few_shot_classification.py
+uv run --group vae python demos/vae_ablation.py
+uv run --group vae python demos/example_when_vae_helps.py
+uv run python demos/example_multi_tts.py
+```
+
+See `demos/REPORT.md` for full results.
 
 ## Setup
 
-Dependencies are managed via `uv`:
-
 ```bash
-pip install uv          # if not already installed
-uv sync                 # installs dependencies from pyproject.toml
+uv sync
 ```

@@ -5,8 +5,10 @@ description = "Speech segmentation and speaker identification library"
 readme = "README.md"
 requires-python = ">=3.14"
 dependencies = [
+    "kokoro-onnx>=0.5.0",
     "numpy>=2.4.6",
     "onnxruntime>=1.26.0",
+    "piper-tts>=1.4.2",
     "soundfile>=0.14.0",
 ]
 
