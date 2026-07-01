@@ -7,6 +7,7 @@ Core inference for:
 
 from speech_segmentation.diarizer import Diarizer
 from speech_segmentation.embedding import SpeakerEmbedder
+from speech_segmentation.pyannote_embedding import PyannoteEmbedder
 from speech_segmentation.segmentation import SpeechSegmenter
 
-__all__ = ["Diarizer", "SpeakerEmbedder", "SpeechSegmenter"]
+__all__ = ["Diarizer", "PyannoteEmbedder", "SpeakerEmbedder", "SpeechSegmenter"]
